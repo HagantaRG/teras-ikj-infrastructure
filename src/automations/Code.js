@@ -1,5 +1,5 @@
 function createFormFromSheet() {
-  // Get the active sheet
+  // Read inventory headers from the stok-barang sheet.
   const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('stok-barang');
   
   // Get the header row (first row) and all column headers
