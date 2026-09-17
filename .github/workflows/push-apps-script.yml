@@ -1,0 +1,48 @@
+name: Push to Apps Script
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: apps-script-main
+  cancel-in-progress: false
+
+jobs:
+  push:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+
+      - name: Install clasp
+        run: npm install --global @google/clasp@3.2.0
+
+      - name: Configure Google credentials
+        env:
+          CLASPRC_JSON: ${{ secrets.CLASPRC_JSON }}
+        run: |
+          if [ -z "$CLASPRC_JSON" ]; then
+            echo "::error::Add the CLASPRC_JSON repository secret."
+            exit 1
+          fi
+          umask 077
+          printf '%s\n' "$CLASPRC_JSON" > "$HOME/.clasprc.json"
+
+      - name: Push source to Apps Script
+        run: clasp push --force
+
+      - name: Remove Google credentials
+        if: always()
+        run: rm -f "$HOME/.clasprc.json"
