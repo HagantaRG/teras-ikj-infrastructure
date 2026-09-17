@@ -68,7 +68,7 @@ function removeInventoryTriggers() {
 }
 
 function handleInventoryColumnChange(event) {
-  if (!event || !['INSERT_COLUMN', 'REMOVE_COLUMN'].includes(event.changeType)) {
+  if (!event || !['INSERT_COLUMN', 'REMOVE_COLUMN', 'OTHER'].includes(event.changeType)) {
     return;
   }
 

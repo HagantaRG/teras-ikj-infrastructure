@@ -2,13 +2,9 @@
 function getInventoryColumns_(sheet) {
   const metadataKey = 'INVENTORY_COLUMN';
   const lastColumn = sheet.getLastColumn();
-  if (lastColumn < 3) {
-    return [];
-  }
-
-  const headers = sheet
-    .getRange(1, 3, 1, lastColumn - 2)
-    .getDisplayValues()[0];
+  const headers = lastColumn >= 3
+    ? sheet.getRange(1, 3, 1, lastColumn - 2).getDisplayValues()[0]
+    : [];
 
   function findColumnMetadata() {
     return sheet.createDeveloperMetadataFinder()
@@ -28,7 +24,6 @@ function getInventoryColumns_(sheet) {
     metadataByColumn.set(columnNumber, metadata);
   }
 
-  const namedColumns = [];
   for (let index = 0; index < headers.length; index++) {
     const title = headers[index].trim();
     if (title === '') {
@@ -43,8 +38,6 @@ function getInventoryColumns_(sheet) {
           SpreadsheetApp.DeveloperMetadataVisibility.DOCUMENT
         );
     }
-
-    namedColumns.push({ columnNumber, title });
   }
 
   // Read again to obtain the IDs assigned to newly tagged columns.
@@ -53,11 +46,14 @@ function getInventoryColumns_(sheet) {
     metadataByColumn.set(columnNumber, metadata);
   }
 
-  return namedColumns.map(column => ({
+  const identifiedColumns = Array.from(metadataByColumn.entries())
+    .sort(([firstColumn], [secondColumn]) => firstColumn - secondColumn);
+
+  return identifiedColumns.map(([columnNumber, metadata]) => ({
     spreadsheetId: sheet.getParent().getId(),
     sheetId: sheet.getSheetId(),
-    metadataId: metadataByColumn.get(column.columnNumber).getId(),
-    columnNumber: column.columnNumber,
-    title: column.title
+    metadataId: metadata.getId(),
+    columnNumber,
+    title: columnNumber >= 3 ? (headers[columnNumber - 3] || '').trim() : ''
   }));
 }
