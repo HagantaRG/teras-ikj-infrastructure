@@ -13,6 +13,7 @@ function createFormFromSheet(event) {
     }
 
     const inventoryColumns = getInventoryColumns_(sheet);
+    syncDashboardData_(spreadsheet, sheet, inventoryColumns);
 
     // Save the form ID once, then reuse that form on subsequent runs.
     const properties = PropertiesService.getScriptProperties();

@@ -113,9 +113,20 @@ function handleInventoryHeaderEdit(event) {
   }
 
   const range = event.range;
-  if (range.getSheet().getName() !== 'stok-barang' ||
-      range.getRow() !== 1 || range.getLastColumn() < 3) {
+  if (range.getSheet().getName() !== 'stok-barang') {
     return;
   }
-  createFormFromSheet(event);
+
+  const touchesInventoryHeader =
+    range.getRow() === 1 && range.getLastColumn() >= 3;
+  if (touchesInventoryHeader) {
+    createFormFromSheet(event);
+    return;
+  }
+
+  const touchesInventoryData =
+    range.getLastRow() >= 2 && range.getLastColumn() >= 2;
+  if (touchesInventoryData) {
+    syncDashboardAfterSheetEdit_(event);
+  }
 }

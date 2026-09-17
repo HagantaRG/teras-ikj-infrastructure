@@ -33,8 +33,9 @@ function recordInventoryFormResponse_(event) {
       metadataIdByQuestionId.set(String(questionId), metadataId);
     }
 
+    const inventoryColumns = getInventoryColumns_(sheet);
     const columnsByMetadataId = new Map(
-      getInventoryColumns_(sheet).map(column => [
+      inventoryColumns.map(column => [
         String(column.metadataId),
         column
       ])
@@ -79,6 +80,8 @@ function recordInventoryFormResponse_(event) {
     for (const [columnNumber, value] of valuesByColumn) {
       sheet.getRange(targetRow, columnNumber).setValue(value);
     }
+
+    syncDashboardData_(spreadsheet, sheet, inventoryColumns);
   } finally {
     lock.releaseLock();
   }
