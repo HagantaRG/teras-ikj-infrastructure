@@ -1,24 +1,54 @@
 function createFormFromSheet() {
-  // Read inventory headers from the stok-barang sheet.
-  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('stok-barang');
-  
-  // Get the header row (first row) and all column headers
-   const headers = sheet.getRange('C1:' + sheet.getLastColumn() + '1').getValues()[0];
-  
-  // Create a new form
-  const form = FormApp.create('Dynamic Form');
-  
-  // Loop through each header and create a form question
-  headers.forEach(header => {
-    // Skip empty headers
-    if (header.trim() !== '') {
-      Logger.log('Header is:' + header)
-      form.addTextItem()
-        .setTitle(header)
-        .setRequired(true);
-    }
-  });
+  const lock = LockService.getScriptLock();
+  lock.waitLock(30000);
 
-  // Log the form URL so you can access it
-  Logger.log('Form created: ' + form.getEditUrl());
+  try {
+    const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+    const sheet = spreadsheet.getSheetByName('stok-barang');
+
+    if (!sheet || sheet.getLastColumn() < 3) {
+      throw new Error('Expected inventory headers in stok-barang, starting at C1.');
+    }
+
+    const headers = sheet
+      .getRange(1, 3, 1, sheet.getLastColumn() - 2)
+      .getDisplayValues()[0]
+      .map(header => header.trim())
+      .filter(header => header !== '');
+
+    if (headers.length === 0) {
+      throw new Error('No inventory headers found.');
+    }
+
+    // Save the form ID once, then reuse that form on subsequent runs.
+    const properties = PropertiesService.getScriptProperties();
+    const savedFormId = properties.getProperty('INVENTORY_FORM_ID');
+    let form;
+
+    if (savedFormId) {
+      form = FormApp.openById(savedFormId);
+    } else {
+      form = FormApp.create('Dynamic Form');
+      properties.setProperty('INVENTORY_FORM_ID', form.getId());
+    }
+
+    // Keep existing questions and add only missing inventory headers.
+    const existingTitles = new Set(
+      form.getItems().map(item => item.getTitle())
+    );
+
+    for (const header of headers) {
+      if (!existingTitles.has(header)) {
+        form.addTextItem()
+          .setTitle(header)
+          .setRequired(true);
+        existingTitles.add(header);
+      }
+    }
+
+    Logger.log('Form URL: ' + form.getPublishedUrl());
+    Logger.log('Edit URL: ' + form.getEditUrl());
+  } finally {
+    lock.releaseLock();
+  }
 }
