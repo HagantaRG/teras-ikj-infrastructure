@@ -12,11 +12,8 @@ function createFormFromSheet(event) {
       throw new Error('Expected inventory headers in stok-barang, starting at C1.');
     }
 
-    const headers = sheet
-      .getRange(1, 3, 1, sheet.getLastColumn() - 2)
-      .getDisplayValues()[0]
-      .map(header => header.trim())
-      .filter(header => header !== '');
+    const inventoryColumns = getInventoryColumns_(sheet);
+    const headers = inventoryColumns.map(column => column.title);
 
     if (headers.length === 0) {
       throw new Error('No inventory headers found.');
