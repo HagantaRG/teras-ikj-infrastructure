@@ -1,11 +1,15 @@
-// Call while holding the script lock.
-function syncInventoryForm_(form, sheet, columns, properties, validation) {
-  const prefix = [
+function getInventoryFormMappingPrefix_(sheet, formId) {
+  return [
     'INVENTORY_ITEM',
     sheet.getParent().getId(),
     sheet.getSheetId(),
-    form.getId()
+    formId
   ].join(':') + ':';
+}
+
+// Call while holding the script lock.
+function syncInventoryForm_(form, sheet, columns, properties, validation) {
+  const prefix = getInventoryFormMappingPrefix_(sheet, form.getId());
   const initializedKey = prefix + 'INITIALIZED';
   const savedProperties = properties.getProperties();
   const initialized = savedProperties[initializedKey] === 'true';

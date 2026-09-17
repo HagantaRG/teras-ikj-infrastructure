@@ -10,6 +10,17 @@ function installInventoryTriggers() {
   try {
     const spreadsheetId = spreadsheet.getId();
     const triggers = ScriptApp.getProjectTriggers();
+    const properties = PropertiesService.getScriptProperties();
+    const formId = properties.getProperty('INVENTORY_FORM_ID');
+
+    if (!formId) {
+      throw new Error(
+        'Run createFormFromSheet before installing inventory triggers.'
+      );
+    }
+
+    properties.setProperty('INVENTORY_SPREADSHEET_ID', spreadsheetId);
+    const form = FormApp.openById(formId);
     const definitions = [
       {
         handler: 'handleInventoryColumnChange',
@@ -41,6 +52,19 @@ function installInventoryTriggers() {
         builder.onEdit().create();
       }
     }
+
+    const formTriggerExists = triggers.some(trigger =>
+      trigger.getHandlerFunction() === 'handleInventoryFormSubmit' &&
+      trigger.getTriggerSourceId() === formId &&
+      trigger.getEventType() === ScriptApp.EventType.ON_FORM_SUBMIT
+    );
+
+    if (!formTriggerExists) {
+      ScriptApp.newTrigger('handleInventoryFormSubmit')
+        .forForm(form)
+        .onFormSubmit()
+        .create();
+    }
   } finally {
     lock.releaseLock();
   }
@@ -54,17 +78,25 @@ function removeInventoryTriggers() {
 
   const handlers = [
     'handleInventoryColumnChange',
-    'handleInventoryHeaderEdit'
+    'handleInventoryHeaderEdit',
+    'handleInventoryFormSubmit'
   ];
+  const formId = PropertiesService.getScriptProperties()
+    .getProperty('INVENTORY_FORM_ID');
+  const sourceIds = new Set([spreadsheet.getId(), formId]);
 
   for (const trigger of ScriptApp.getProjectTriggers()) {
     if (
       handlers.includes(trigger.getHandlerFunction()) &&
-      trigger.getTriggerSourceId() === spreadsheet.getId()
+      sourceIds.has(trigger.getTriggerSourceId())
     ) {
       ScriptApp.deleteTrigger(trigger);
     }
   }
+}
+
+function handleInventoryFormSubmit(event) {
+  recordInventoryFormResponse_(event);
 }
 
 function handleInventoryColumnChange(event) {
