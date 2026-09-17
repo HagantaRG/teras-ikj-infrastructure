@@ -32,11 +32,14 @@ function getInventoryColumns_(sheet) {
 
     const columnNumber = index + 3;
     if (!metadataByColumn.has(columnNumber)) {
-      sheet.getRange(1, columnNumber, sheet.getMaxRows(), 1)
-        .addDeveloperMetadata(
-          metadataKey,
-          SpreadsheetApp.DeveloperMetadataVisibility.DOCUMENT
-        );
+      const columnName = sheet
+        .getRange(1, columnNumber)
+        .getA1Notation()
+        .replace(/[0-9]+$/, '');
+      sheet.getRange(columnName + ':' + columnName).addDeveloperMetadata(
+        metadataKey,
+        SpreadsheetApp.DeveloperMetadataVisibility.DOCUMENT
+      );
     }
   }
 
