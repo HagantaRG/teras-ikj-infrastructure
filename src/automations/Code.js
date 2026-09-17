@@ -25,7 +25,7 @@ function createFormFromSheet(event) {
     if (savedFormId) {
       form = FormApp.openById(savedFormId);
     } else {
-      form = FormApp.create('Formulir Stok Barang');
+      form = FormApp.create('Formulir Stok Barang TERAS IKJ');
       properties.setProperty('INVENTORY_FORM_ID', form.getId());
     }
 
