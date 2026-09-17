@@ -1,9 +1,11 @@
-function createFormFromSheet() {
+function createFormFromSheet(event) {
   const lock = LockService.getScriptLock();
   lock.waitLock(30000);
 
   try {
-    const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+    const spreadsheet = event && event.source
+      ? event.source
+      : SpreadsheetApp.getActiveSpreadsheet();
     const sheet = spreadsheet.getSheetByName('stok-barang');
 
     if (!sheet || sheet.getLastColumn() < 3) {
