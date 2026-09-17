@@ -28,9 +28,11 @@ function createFormFromSheet() {
     if (savedFormId) {
       form = FormApp.openById(savedFormId);
     } else {
-      form = FormApp.create('Dynamic Form');
+      form = FormApp.create('Formulir Stok Barang');
       properties.setProperty('INVENTORY_FORM_ID', form.getId());
     }
+
+    form.setTitle('Formulir Stok Barang');
 
     // Keep existing questions and add only missing inventory headers.
     const existingTitles = new Set(
@@ -40,10 +42,21 @@ function createFormFromSheet() {
     for (const header of headers) {
       if (!existingTitles.has(header)) {
         form.addTextItem()
-          .setTitle(header)
-          .setRequired(true);
+          .setTitle(header);
         existingTitles.add(header);
       }
+    }
+
+    const integerValidation = FormApp.createTextValidation()
+      .requireTextMatchesPattern('^[0-9]+$')
+      .setHelpText('Isi dengan angka seperti 0, 1, 2, atau 3, tanpa koma, titik, atau tanda minus. Boleh dikosongkan.')
+      .build();
+
+    // Apply the rules to both existing and newly added text fields.
+    for (const item of form.getItems(FormApp.ItemType.TEXT)) {
+      item.asTextItem()
+        .setRequired(false)
+        .setValidation(integerValidation);
     }
 
     Logger.log('Form URL: ' + form.getPublishedUrl());
