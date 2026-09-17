@@ -113,7 +113,15 @@ function handleInventoryHeaderEdit(event) {
   }
 
   const range = event.range;
-  if (range.getSheet().getName() !== 'stok-barang') {
+  const editedSheetName = range.getSheet().getName();
+  if (editedSheetName === 'daftar-barang') {
+    if (range.getRow() >= 2 && range.getColumn() <= 4) {
+      createFormFromSheet(event);
+    }
+    return;
+  }
+
+  if (editedSheetName !== 'stok-barang') {
     return;
   }
 

@@ -12,6 +12,7 @@ function createFormFromSheet(event) {
       throw new Error('The stok-barang sheet was not found.');
     }
 
+    syncInventoryColumnsFromManifest_(spreadsheet, sheet);
     const inventoryColumns = getInventoryColumns_(sheet);
     syncDashboardData_(spreadsheet, sheet, inventoryColumns);
 
