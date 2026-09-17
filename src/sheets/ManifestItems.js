@@ -22,10 +22,12 @@ function syncInventoryColumnsFromManifest_(spreadsheet, inventorySheet) {
   const manifestNames = new Map();
 
   for (const item of manifestItems) {
-    if (manifestNames.has(item.name)) {
-      manifestNames.set(item.name, null);
-    } else {
-      manifestNames.set(item.name, item.id);
+    for (const name of [item.name, item.displayName]) {
+      if (manifestNames.has(name)) {
+        manifestNames.set(name, null);
+      } else {
+        manifestNames.set(name, item.id);
+      }
     }
   }
 
@@ -65,7 +67,7 @@ function syncInventoryColumnsFromManifest_(spreadsheet, inventorySheet) {
 
     inventorySheet
       .getRange(1, column.columnNumber)
-      .setValue(item.name);
+      .setValue(item.displayName);
   }
 
   // Keep removed columns for history, but remove their headers so they no
@@ -79,17 +81,46 @@ function syncInventoryColumnsFromManifest_(spreadsheet, inventorySheet) {
 
 function readManifestItems_(manifestSheet) {
   const lastRow = manifestSheet.getLastRow();
-  if (lastRow < 2) {
+  const lastColumn = manifestSheet.getLastColumn();
+  if (lastRow < 2 || lastColumn === 0) {
     return [];
   }
 
-  const values = manifestSheet.getRange(2, 1, lastRow - 1, 4).getDisplayValues();
+  const headers = manifestSheet
+    .getRange(1, 1, 1, lastColumn)
+    .getDisplayValues()[0]
+    .map(header => header.trim().toLowerCase());
+  const columnNumbers = {
+    id: headers.indexOf('id barang'),
+    name: headers.indexOf('nama barang'),
+    unit: headers.indexOf('unit'),
+    minimumStock: headers.indexOf('level stok minim'),
+    active: headers.indexOf('aktif')
+  };
+  const missingHeaders = Object.entries(columnNumbers)
+    .filter(([, columnNumber]) => columnNumber === -1)
+    .map(([name]) => name);
+  if (missingHeaders.length > 0) {
+    throw new Error(
+      'The daftar-barang sheet is missing required headers: ' +
+      missingHeaders.join(', ') + '.'
+    );
+  }
+
+  const values = manifestSheet
+    .getRange(2, 1, lastRow - 1, lastColumn)
+    .getDisplayValues();
   const seenIds = new Set();
   const items = [];
 
   for (let index = 0; index < values.length; index++) {
-    const [id, name, minimumStock, activeValue] = values[index].map(value => value.trim());
-    if (!id && !name && !minimumStock && !activeValue) {
+    const row = values[index].map(value => value.trim());
+    const id = row[columnNumbers.id];
+    const name = row[columnNumbers.name];
+    const unit = row[columnNumbers.unit];
+    const minimumStock = row[columnNumbers.minimumStock];
+    const activeValue = row[columnNumbers.active];
+    if (!id && !name && !unit && !minimumStock && !activeValue) {
       continue;
     }
 
@@ -105,11 +136,16 @@ function readManifestItems_(manifestSheet) {
     if (!name) {
       throw new Error('The item name in daftar-barang row ' + (index + 2) + ' is empty.');
     }
+    if (!unit) {
+      throw new Error('The unit in daftar-barang row ' + (index + 2) + ' is empty.');
+    }
 
     seenIds.add(id);
     items.push({
       id,
       name,
+      unit,
+      displayName: name + '/' + unit,
       minimumStock,
       active: activeValue === '' || activeValue.toUpperCase() === 'TRUE'
     });

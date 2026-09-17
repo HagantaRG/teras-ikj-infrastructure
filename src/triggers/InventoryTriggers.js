@@ -115,7 +115,7 @@ function handleInventoryHeaderEdit(event) {
   const range = event.range;
   const editedSheetName = range.getSheet().getName();
   if (editedSheetName === 'daftar-barang') {
-    if (range.getRow() >= 2 && range.getColumn() <= 4) {
+    if (range.getRow() >= 2 && range.getColumn() <= 5) {
       createFormFromSheet(event);
     }
     return;
