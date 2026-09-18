@@ -9,6 +9,7 @@ function createDashboardData() {
       throw new Error('The stok-barang sheet was not found.');
     }
 
+    syncInventoryColumnsFromManifest_(spreadsheet, sourceSheet);
     const columns = getInventoryColumns_(sourceSheet);
     syncDashboardData_(spreadsheet, sourceSheet, columns);
   } finally {
@@ -20,16 +21,19 @@ function createDashboardData() {
 function syncDashboardData_(spreadsheet, sourceSheet, columns) {
   const dashboardSheet = getOrCreateDashboardSheet_(spreadsheet);
   const existingRows = readDashboardRows_(dashboardSheet);
-  const activeColumns = columns.filter(column => column.title !== '');
-  const activeMetadataIds = new Set(
-    activeColumns.map(column => String(column.metadataId))
+  if (existingRows.some(row => !MANIFEST_ITEM_ID_PATTERN.test(String(row[1])))) {
+    throw new Error('Legacy dashboard IDs found. Run resetInventoryData once.');
+  }
+  const retainedColumns = columns.filter(column => column.title !== '');
+  const retainedInventoryIds = new Set(
+    retainedColumns.map(column => column.itemId)
   );
 
-  // Keep history for columns that have been deleted or temporarily unnamed.
+  // Rebuild all retained columns, including inactive items; keep deleted-column history.
   const preservedRows = existingRows.filter(row =>
-    !activeMetadataIds.has(String(row[1]))
+    !retainedInventoryIds.has(String(row[1]))
   );
-  const currentRows = buildCurrentDashboardRows_(sourceSheet, activeColumns);
+  const currentRows = buildCurrentDashboardRows_(sourceSheet, retainedColumns);
   const dashboardRows = preservedRows.concat(currentRows);
 
   dashboardRows.sort((first, second) => {
@@ -126,15 +130,15 @@ function buildCurrentDashboardRows_(sourceSheet, columns) {
         rowIndex + 2,
         column.columnNumber
       );
-      const metadataId = String(column.metadataId);
-      const key = dateKey + ':' + metadataId;
+      const inventoryId = column.itemId;
+      const key = dateKey + ':' + inventoryId;
 
       if (keys.has(key)) {
         throw new Error(
           'Duplicate dashboard value for date ' +
           dateKey +
           ' and product ID ' +
-          metadataId +
+          inventoryId +
           '.'
         );
       }
@@ -142,7 +146,7 @@ function buildCurrentDashboardRows_(sourceSheet, columns) {
 
       rows.push([
         new Date(date.getTime()),
-        metadataId,
+        inventoryId,
         column.title,
         quantity
       ]);
@@ -194,6 +198,7 @@ function syncDashboardAfterSheetEdit_(event) {
       throw new Error('The stok-barang sheet was not found.');
     }
 
+    syncInventoryColumnsFromManifest_(spreadsheet, sourceSheet);
     const columns = getInventoryColumns_(sourceSheet);
     syncDashboardData_(spreadsheet, sourceSheet, columns);
   } finally {

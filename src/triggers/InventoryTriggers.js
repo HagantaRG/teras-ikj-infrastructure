@@ -100,7 +100,7 @@ function handleInventoryFormSubmit(event) {
 }
 
 function handleInventoryColumnChange(event) {
-  if (!event || !['INSERT_COLUMN', 'REMOVE_COLUMN', 'OTHER'].includes(event.changeType)) {
+  if (!event || !['INSERT_COLUMN', 'REMOVE_COLUMN', 'INSERT_ROW', 'REMOVE_ROW', 'OTHER'].includes(event.changeType)) {
     return;
   }
 
@@ -115,9 +115,8 @@ function handleInventoryHeaderEdit(event) {
   const range = event.range;
   const editedSheetName = range.getSheet().getName();
   if (editedSheetName === 'daftar-barang') {
-    if (range.getRow() >= 2 && range.getColumn() <= 5) {
-      createFormFromSheet(event);
-    }
+    // Headers may be reordered, and a paste may include the header row.
+    createFormFromSheet(event);
     return;
   }
 

@@ -1,89 +1,65 @@
 const INVENTORY_ITEM_METADATA_KEY = 'INVENTORY_ITEM_ID';
 const MANIFEST_ITEM_ID_PATTERN = /^TRS-[0-9]{4}$/;
 
-// Call while holding the script lock.
+// Call while holding the script lock. Never adopt columns by their header.
 function syncInventoryColumnsFromManifest_(spreadsheet, inventorySheet) {
   const manifestSheet = spreadsheet.getSheetByName('daftar-barang');
   if (!manifestSheet) {
     throw new Error('The daftar-barang sheet was not found.');
   }
-
-  const manifestItems = readManifestItems_(manifestSheet);
-  const activeItemIds = new Set(
-    manifestItems
-      .filter(item => item.active)
-      .map(item => item.id)
+  const items = readManifestItems_(manifestSheet);
+  const columnsById = readInventoryItemMetadata_(inventorySheet);
+  const managedColumnNumbers = new Set(
+    Array.from(columnsById.values()).map(column => column.columnNumber)
   );
-  const columns = getInventoryColumns_(inventorySheet);
-  const columnsByItemId = readInventoryItemMetadata_(inventorySheet);
-  const metadataColumnNumbers = new Set(
-    Array.from(columnsByItemId.values()).map(column => column.columnNumber)
-  );
-  const manifestNames = new Map();
+  const lastColumn = inventorySheet.getLastColumn();
 
-  for (const item of manifestItems) {
-    for (const name of [item.name, item.displayName]) {
-      if (manifestNames.has(name)) {
-        manifestNames.set(name, null);
-      } else {
-        manifestNames.set(name, item.id);
+  // Refuse legacy or manually created headers instead of inventing item IDs.
+  if (lastColumn >= 3) {
+    const headers = inventorySheet.getRange(1, 3, 1, lastColumn - 2)
+      .getDisplayValues()[0];
+    for (let index = 0; index < headers.length; index++) {
+      if (headers[index].trim() && !managedColumnNumbers.has(index + 3)) {
+        throw new Error(
+          'Unmanaged inventory column ' + (index + 3) +
+          '. For initial setup, run resetInventoryData. Manage items in daftar-barang.'
+        );
       }
     }
   }
 
-  // Migrate existing columns whose header exactly identifies one manifest item.
-  for (const column of columns) {
-    if (metadataColumnNumbers.has(column.columnNumber)) {
+  let nextColumn = Math.max(
+    2, lastColumn, ...managedColumnNumbers
+  ) + 1;
+  for (const item of items) {
+    let column = columnsById.get(item.id);
+    if (!column && !item.active) {
       continue;
     }
-
-    const itemId = manifestNames.get(column.title);
-    if (!itemId) {
-      continue;
-    }
-
-    addInventoryItemMetadata_(inventorySheet, column.columnNumber, itemId);
-    metadataColumnNumbers.add(column.columnNumber);
-    columnsByItemId.set(itemId, {
-      columnNumber: column.columnNumber,
-      itemId
-    });
-  }
-
-  // Add new active items and update the names of existing items.
-  for (const item of manifestItems.filter(item => item.active)) {
-    let column = columnsByItemId.get(item.id);
-
     if (!column) {
-      const newColumnNumber = Math.max(inventorySheet.getLastColumn() + 1, 3);
-      inventorySheet.insertColumnAfter(Math.max(newColumnNumber - 1, 2));
-      addInventoryItemMetadata_(inventorySheet, newColumnNumber, item.id);
-      column = {
-        columnNumber: newColumnNumber,
-        itemId: item.id
-      };
-      columnsByItemId.set(item.id, column);
+      if (nextColumn > inventorySheet.getMaxColumns()) {
+        inventorySheet.insertColumnsAfter(
+          inventorySheet.getMaxColumns(),
+          nextColumn - inventorySheet.getMaxColumns()
+        );
+      }
+      addInventoryItemMetadata_(inventorySheet, nextColumn, item.id);
+      column = { columnNumber: nextColumn, itemId: item.id };
+      columnsById.set(item.id, column);
+      nextColumn++;
     }
-
-    inventorySheet
-      .getRange(1, column.columnNumber)
-      .setValue(item.displayName);
+    inventorySheet.getRange(1, column.columnNumber).setValue(item.displayName);
   }
 
-  // Keep removed columns for history, but remove their headers so they no
-  // longer appear as questions in the form.
-  for (const column of readInventoryItemMetadata_(inventorySheet).values()) {
-    if (!activeItemIds.has(column.itemId)) {
-      inventorySheet.getRange(1, column.columnNumber).clearContent();
-    }
-  }
+  // Inactive/removed columns stay intact for historical corrections.
+  // Form inclusion is decided by the manifest's Aktif value, not the header.
 }
 
 function readManifestItems_(manifestSheet) {
   const lastRow = manifestSheet.getLastRow();
   const lastColumn = manifestSheet.getLastColumn();
-  if (lastRow < 2 || lastColumn === 0) {
-    return [];
+  if (lastColumn === 0) {
+    throw new Error('The daftar-barang sheet has no headers.');
   }
 
   const headers = manifestSheet
@@ -107,6 +83,17 @@ function readManifestItems_(manifestSheet) {
     );
   }
 
+  for (const requiredHeader of [
+    'id barang', 'nama barang', 'unit', 'level stok minim', 'aktif'
+  ]) {
+    if (headers.filter(header => header === requiredHeader).length > 1) {
+      throw new Error('Duplicate daftar-barang header: ' + requiredHeader);
+    }
+  }
+  if (lastRow < 2) {
+    return [];
+  }
+
   const values = manifestSheet
     .getRange(2, 1, lastRow - 1, lastColumn)
     .getDisplayValues();
@@ -120,7 +107,8 @@ function readManifestItems_(manifestSheet) {
     const unit = row[columnNumbers.unit];
     const minimumStock = row[columnNumbers.minimumStock];
     const activeValue = row[columnNumbers.active];
-    if (!id && !name && !unit && !minimumStock && !activeValue) {
+    if (!id && !name && !unit && !minimumStock &&
+        (activeValue === '' || activeValue.toUpperCase() === 'FALSE')) {
       continue;
     }
 
@@ -138,6 +126,10 @@ function readManifestItems_(manifestSheet) {
     }
     if (!unit) {
       throw new Error('The unit in daftar-barang row ' + (index + 2) + ' is empty.');
+    }
+
+    if (!['', 'TRUE', 'FALSE'].includes(activeValue.toUpperCase())) {
+      throw new Error('Aktif must be TRUE or FALSE in daftar-barang row ' + (index + 2) + '.');
     }
 
     seenIds.add(id);
@@ -160,14 +152,22 @@ function readInventoryItemMetadata_(sheet) {
     .withLocationType(SpreadsheetApp.DeveloperMetadataLocationType.COLUMN)
     .find();
   const columnsByItemId = new Map();
+  const seenColumns = new Set();
 
   for (const entry of metadata) {
     const itemId = entry.getValue();
     const columnNumber = entry.getLocation().getColumn().getColumn();
-    if (!itemId || columnsByItemId.has(itemId)) {
+    if (!MANIFEST_ITEM_ID_PATTERN.test(itemId) ||
+        columnsByItemId.has(itemId) || seenColumns.has(columnNumber) ||
+        columnNumber < 3) {
       throw new Error('Each inventory item must have exactly one column metadata ID.');
     }
-    columnsByItemId.set(itemId, { columnNumber, itemId });
+    seenColumns.add(columnNumber);
+    columnsByItemId.set(itemId, {
+      columnNumber,
+      itemId,
+      title: sheet.getRange(1, columnNumber).getDisplayValue().trim()
+    });
   }
 
   return columnsByItemId;

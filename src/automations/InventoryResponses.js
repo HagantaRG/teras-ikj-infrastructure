@@ -19,24 +19,28 @@ function recordInventoryFormResponse_(event) {
       throw new Error('The stok-barang sheet was not found.');
     }
 
+    syncInventoryColumnsFromManifest_(spreadsheet, sheet);
     const form = event.source;
     const prefix = getInventoryFormMappingPrefix_(sheet, form.getId());
     const savedProperties = properties.getProperties();
-    const metadataIdByQuestionId = new Map();
+    const inventoryIdByQuestionId = new Map();
 
     for (const [key, questionId] of Object.entries(savedProperties)) {
       if (!key.startsWith(prefix) || key === prefix + 'INITIALIZED') {
         continue;
       }
 
-      const metadataId = key.slice(prefix.length);
-      metadataIdByQuestionId.set(String(questionId), metadataId);
+      const inventoryId = key.slice(prefix.length);
+      if (!MANIFEST_ITEM_ID_PATTERN.test(inventoryId)) {
+        throw new Error('Legacy inventory mapping found. Run resetInventoryData once.');
+      }
+      inventoryIdByQuestionId.set(String(questionId), inventoryId);
     }
 
     const inventoryColumns = getInventoryColumns_(sheet);
-    const columnsByMetadataId = new Map(
+    const columnsByInventoryId = new Map(
       inventoryColumns.map(column => [
-        String(column.metadataId),
+        column.itemId,
         column
       ])
     );
@@ -44,10 +48,10 @@ function recordInventoryFormResponse_(event) {
 
     for (const itemResponse of event.response.getItemResponses()) {
       const questionId = String(itemResponse.getItem().getId());
-      const metadataId = metadataIdByQuestionId.get(questionId);
+      const inventoryId = inventoryIdByQuestionId.get(questionId);
 
       // Ignore form questions that are not managed by the inventory mapping.
-      if (!metadataId) {
+      if (!inventoryId) {
         continue;
       }
 
@@ -61,10 +65,10 @@ function recordInventoryFormResponse_(event) {
         );
       }
 
-      const column = columnsByMetadataId.get(metadataId);
-      if (!column) {
+      const column = columnsByInventoryId.get(inventoryId);
+      if (!column || !column.active) {
         throw new Error(
-          'No inventory column exists for metadata ID ' + metadataId + '.'
+          'No active inventory column exists for ID Barang ' + inventoryId + '.'
         );
       }
 

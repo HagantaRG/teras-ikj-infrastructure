@@ -39,4 +39,6 @@ authenticated, use `clasp status` to review the deployment file list before
 running `clasp push` to update the connected Apps Script project.
 
 The existing automation and manifest were moved without changing their contents.
-No build step or local test runner is configured yet.
+No build step is required. Run `node tests/manifest-identity.cjs` for local mock
+checks. See [inventory setup and operation](docs/README.md) for the manifest
+schema, clean-start reset, and trigger setup.

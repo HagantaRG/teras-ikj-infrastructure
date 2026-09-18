@@ -12,7 +12,6 @@ function syncInventoryForm_(form, sheet, columns, properties, validation) {
   const prefix = getInventoryFormMappingPrefix_(sheet, form.getId());
   const initializedKey = prefix + 'INITIALIZED';
   const savedProperties = properties.getProperties();
-  const initialized = savedProperties[initializedKey] === 'true';
   const mappings = new Map();
   const claimedItemIds = new Set();
   const items = form.getItems();
@@ -26,8 +25,8 @@ function syncInventoryForm_(form, sheet, columns, properties, validation) {
       continue;
     }
 
-    const metadataId = key.slice(prefix.length);
-    if (!/^[0-9]+$/.test(metadataId) || !/^-?[0-9]+$/.test(itemId)) {
+    const inventoryId = key.slice(prefix.length);
+    if (!MANIFEST_ITEM_ID_PATTERN.test(inventoryId) || !/^-?[0-9]+$/.test(itemId)) {
       throw new Error('Invalid inventory question mapping: ' + key);
     }
     if (claimedItemIds.has(itemId)) {
@@ -39,48 +38,16 @@ function syncInventoryForm_(form, sheet, columns, properties, validation) {
       throw new Error('Mapped inventory question is no longer a text field: ' + itemId);
     }
 
-    mappings.set(metadataId, itemId);
+    mappings.set(inventoryId, itemId);
     claimedItemIds.add(itemId);
   }
 
-  const titleCounts = new Map();
-  for (const column of columns) {
-    if (column.title !== '') {
-      titleCounts.set(column.title, (titleCounts.get(column.title) || 0) + 1);
-    }
-  }
-
-  // Plan initial adoption before making changes; ambiguous matches need review.
-  const plans = [];
-  for (const column of columns) {
-    const metadataId = String(column.metadataId);
-    const mappedItemId = mappings.get(metadataId);
-    let item = itemsById.get(mappedItemId);
-
-    if (column.title === '') {
-      continue;
-    }
-
-    if (!initialized && !mappedItemId) {
-      const candidates = items.filter(candidate =>
-        candidate.getType() === FormApp.ItemType.TEXT &&
-        candidate.getTitle() === column.title &&
-        !claimedItemIds.has(String(candidate.getId()))
-      );
-
-      if (candidates.length > 1 ||
-          (candidates.length === 1 && titleCounts.get(column.title) > 1)) {
-        throw new Error('Ambiguous existing question for header: ' + column.title);
-      }
-
-      item = candidates[0];
-      if (item) {
-        claimedItemIds.add(String(item.getId()));
-      }
-    }
-
-    plans.push({ column, metadataId, item });
-  }
+  const activeColumns = columns.filter(column => column.active);
+  const plans = activeColumns.map(column => ({
+    column,
+    inventoryId: column.itemId,
+    item: itemsById.get(mappings.get(column.itemId))
+  }));
 
   // Persist each association as it is established so retries can reuse it.
   for (const plan of plans) {
@@ -89,8 +56,8 @@ function syncInventoryForm_(form, sheet, columns, properties, validation) {
       : form.addTextItem().setTitle(plan.column.title);
     const itemId = String(item.getId());
 
-    properties.setProperty(prefix + plan.metadataId, itemId);
-    mappings.set(plan.metadataId, itemId);
+    properties.setProperty(prefix + plan.inventoryId, itemId);
+    mappings.set(plan.inventoryId, itemId);
     itemsById.set(itemId, item);
 
     item.setTitle(plan.column.title)
@@ -98,12 +65,12 @@ function syncInventoryForm_(form, sheet, columns, properties, validation) {
       .setValidation(validation);
   }
 
-  // Blank headers still have metadata, so they are not treated as deletions.
-  const liveMetadataIds = new Set(
-    columns.map(column => String(column.metadataId))
+  // Only active manifest items belong in the form.
+  const liveInventoryIds = new Set(
+    activeColumns.map(column => column.itemId)
   );
-  for (const [metadataId, itemId] of mappings) {
-    if (liveMetadataIds.has(metadataId)) {
+  for (const [inventoryId, itemId] of mappings) {
+    if (liveInventoryIds.has(inventoryId)) {
       continue;
     }
 
@@ -111,13 +78,13 @@ function syncInventoryForm_(form, sheet, columns, properties, validation) {
     if (item) {
       form.deleteItem(item);
     }
-    properties.deleteProperty(prefix + metadataId);
-    mappings.delete(metadataId);
+    properties.deleteProperty(prefix + inventoryId);
+    mappings.delete(inventoryId);
   }
 
   // Reorder managed questions within their slots, preserving unrelated items.
-  const orderedItems = columns
-    .map(column => itemsById.get(mappings.get(String(column.metadataId))))
+  const orderedItems = activeColumns
+    .map(column => itemsById.get(mappings.get(column.itemId)))
     .filter(item => item !== undefined);
   const managedIds = new Set(orderedItems.map(item => String(item.getId())));
   let managedIndex = 0;

@@ -1,0 +1,705 @@
+diff --git a/src/automations/Code.js b/src/automations/Code.js
+--- a/src/automations/Code.js
++++ b/src/automations/Code.js
+@@ -12,37 +12,43 @@
+       throw new Error('The stok-barang sheet was not found.');
+     }
+ 
+-    syncInventoryColumnsFromManifest_(spreadsheet, sheet);
+-    const inventoryColumns = getInventoryColumns_(sheet);
+-    syncDashboardData_(spreadsheet, sheet, inventoryColumns);
++    refreshInventorySystem_(spreadsheet, sheet);
++  } finally {
++    lock.releaseLock();
++  }
++}
+ 
+-    // Save the form ID once, then reuse that form on subsequent runs.
+-    const properties = PropertiesService.getScriptProperties();
+-    const savedFormId = properties.getProperty('INVENTORY_FORM_ID');
+-    if (!savedFormId && !inventoryColumns.some(column => column.title !== '')) {
+-      return;
+-    }
+-    let form;
++// Call while holding the script lock, including during the explicit reset.
++function refreshInventorySystem_(spreadsheet, sheet) {
++  syncInventoryColumnsFromManifest_(spreadsheet, sheet);
++  const inventoryColumns = getInventoryColumns_(sheet);
++  syncDashboardData_(spreadsheet, sheet, inventoryColumns);
+ 
+-    if (savedFormId) {
+-      form = FormApp.openById(savedFormId);
+-    } else {
+-      form = FormApp.create('Formulir Stok Barang TERAS IKJ');
+-      properties.setProperty('INVENTORY_FORM_ID', form.getId());
+-    }
++  // Save the form ID once, then reuse that form on subsequent runs.
++  const properties = PropertiesService.getScriptProperties();
++  properties.setProperty('INVENTORY_SPREADSHEET_ID', spreadsheet.getId());
++  const savedFormId = properties.getProperty('INVENTORY_FORM_ID');
++  if (!savedFormId && !inventoryColumns.some(column => column.active)) {
++    return;
++  }
++  let form;
+ 
+-    form.setTitle('Formulir Stok Barang');
++  if (savedFormId) {
++    form = FormApp.openById(savedFormId);
++  } else {
++    form = FormApp.create('Formulir Stok Barang TERAS IKJ');
++    properties.setProperty('INVENTORY_FORM_ID', form.getId());
++  }
+ 
+-    const integerValidation = FormApp.createTextValidation()
+-      .requireTextMatchesPattern('^[0-9]+$')
+-      .setHelpText('Isi dengan angka seperti 0, 1, 2, atau 3, tanpa koma, titik, atau tanda minus. Boleh dikosongkan.')
+-      .build();
++  form.setTitle('Formulir Stok Barang');
+ 
+-    syncInventoryForm_(form, sheet, inventoryColumns, properties, integerValidation);
++  const integerValidation = FormApp.createTextValidation()
++    .requireTextMatchesPattern('^[0-9]+$')
++    .setHelpText('Isi dengan angka seperti 0, 1, 2, atau 3, tanpa koma, titik, atau tanda minus. Boleh dikosongkan.')
++    .build();
+ 
+-    Logger.log('Form URL: ' + form.getPublishedUrl());
+-    Logger.log('Edit URL: ' + form.getEditUrl());
+-  } finally {
+-    lock.releaseLock();
+-  }
++  syncInventoryForm_(form, sheet, inventoryColumns, properties, integerValidation);
++
++  Logger.log('Form URL: ' + form.getPublishedUrl());
++  Logger.log('Edit URL: ' + form.getEditUrl());
+ }
+diff --git a/src/automations/InventoryResponses.js b/src/automations/InventoryResponses.js
+--- a/src/automations/InventoryResponses.js
++++ b/src/automations/InventoryResponses.js
+@@ -19,24 +19,28 @@
+       throw new Error('The stok-barang sheet was not found.');
+     }
+ 
++    syncInventoryColumnsFromManifest_(spreadsheet, sheet);
+     const form = event.source;
+     const prefix = getInventoryFormMappingPrefix_(sheet, form.getId());
+     const savedProperties = properties.getProperties();
+-    const metadataIdByQuestionId = new Map();
++    const inventoryIdByQuestionId = new Map();
+ 
+     for (const [key, questionId] of Object.entries(savedProperties)) {
+       if (!key.startsWith(prefix) || key === prefix + 'INITIALIZED') {
+         continue;
+       }
+ 
+-      const metadataId = key.slice(prefix.length);
+-      metadataIdByQuestionId.set(String(questionId), metadataId);
++      const inventoryId = key.slice(prefix.length);
++      if (!MANIFEST_ITEM_ID_PATTERN.test(inventoryId)) {
++        throw new Error('Legacy inventory mapping found. Run resetInventoryData once.');
++      }
++      inventoryIdByQuestionId.set(String(questionId), inventoryId);
+     }
+ 
+     const inventoryColumns = getInventoryColumns_(sheet);
+-    const columnsByMetadataId = new Map(
++    const columnsByInventoryId = new Map(
+       inventoryColumns.map(column => [
+-        String(column.metadataId),
++        column.itemId,
+         column
+       ])
+     );
+@@ -44,10 +48,10 @@
+ 
+     for (const itemResponse of event.response.getItemResponses()) {
+       const questionId = String(itemResponse.getItem().getId());
+-      const metadataId = metadataIdByQuestionId.get(questionId);
++      const inventoryId = inventoryIdByQuestionId.get(questionId);
+ 
+       // Ignore form questions that are not managed by the inventory mapping.
+-      if (!metadataId) {
++      if (!inventoryId) {
+         continue;
+       }
+ 
+@@ -61,10 +65,10 @@
+         );
+       }
+ 
+-      const column = columnsByMetadataId.get(metadataId);
+-      if (!column) {
++      const column = columnsByInventoryId.get(inventoryId);
++      if (!column || !column.active) {
+         throw new Error(
+-          'No inventory column exists for metadata ID ' + metadataId + '.'
++          'No active inventory column exists for ID Barang ' + inventoryId + '.'
+         );
+       }
+ 
+diff --git a/src/sheets/InventoryColumns.js b/src/sheets/InventoryColumns.js
+--- a/src/sheets/InventoryColumns.js
++++ b/src/sheets/InventoryColumns.js
+@@ -1,62 +1,22 @@
+-// Call while holding the script lock to prevent duplicate metadata creation.
++// Inventory identity comes from ID Barang, never a header or Google's metadata ID.
+ function getInventoryColumns_(sheet) {
+-  const metadataKey = 'INVENTORY_COLUMN';
+-  const lastColumn = sheet.getLastColumn();
+-  const headers = lastColumn >= 3
+-    ? sheet.getRange(1, 3, 1, lastColumn - 2).getDisplayValues()[0]
+-    : [];
+-
+-  function findColumnMetadata() {
+-    return sheet.createDeveloperMetadataFinder()
+-      .withKey(metadataKey)
+-      .withLocationType(SpreadsheetApp.DeveloperMetadataLocationType.COLUMN)
+-      .find();
+-  }
+-
+-  const metadataByColumn = new Map();
+-  for (const metadata of findColumnMetadata()) {
+-    const columnNumber = metadata.getLocation().getColumn().getColumn();
+-    if (metadataByColumn.has(columnNumber)) {
+-      throw new Error(
+-        'Multiple inventory metadata tags found in column ' + columnNumber + '.'
+-      );
+-    }
+-    metadataByColumn.set(columnNumber, metadata);
+-  }
+-
+-  for (let index = 0; index < headers.length; index++) {
+-    const title = headers[index].trim();
+-    if (title === '') {
+-      continue;
+-    }
+-
+-    const columnNumber = index + 3;
+-    if (!metadataByColumn.has(columnNumber)) {
+-      const columnName = sheet
+-        .getRange(1, columnNumber)
+-        .getA1Notation()
+-        .replace(/[0-9]+$/, '');
+-      sheet.getRange(columnName + ':' + columnName).addDeveloperMetadata(
+-        metadataKey,
+-        SpreadsheetApp.DeveloperMetadataVisibility.DOCUMENT
+-      );
+-    }
+-  }
+-
+-  // Read again to obtain the IDs assigned to newly tagged columns.
+-  for (const metadata of findColumnMetadata()) {
+-    const columnNumber = metadata.getLocation().getColumn().getColumn();
+-    metadataByColumn.set(columnNumber, metadata);
++  const manifestSheet = sheet.getParent().getSheetByName('daftar-barang');
++  if (!manifestSheet) {
++    throw new Error('The daftar-barang sheet was not found.');
+   }
+-
+-  const identifiedColumns = Array.from(metadataByColumn.entries())
+-    .sort(([firstColumn], [secondColumn]) => firstColumn - secondColumn);
++  const itemsById = new Map(
++    readManifestItems_(manifestSheet).map(item => [item.id, item])
++  );
+ 
+-  return identifiedColumns.map(([columnNumber, metadata]) => ({
+-    spreadsheetId: sheet.getParent().getId(),
+-    sheetId: sheet.getSheetId(),
+-    metadataId: metadata.getId(),
+-    columnNumber,
+-    title: columnNumber >= 3 ? (headers[columnNumber - 3] || '').trim() : ''
+-  }));
++  return Array.from(readInventoryItemMetadata_(sheet).values())
++    .sort((first, second) => first.columnNumber - second.columnNumber)
++    .map(column => {
++      const item = itemsById.get(column.itemId);
++      return {
++        itemId: column.itemId,
++        columnNumber: column.columnNumber,
++        title: item ? item.displayName : column.title,
++        active: Boolean(item && item.active)
++      };
++    });
+ }
+diff --git a/src/sheets/ManifestItems.js b/src/sheets/ManifestItems.js
+--- a/src/sheets/ManifestItems.js
++++ b/src/sheets/ManifestItems.js
+@@ -1,89 +1,65 @@
+ const INVENTORY_ITEM_METADATA_KEY = 'INVENTORY_ITEM_ID';
+ const MANIFEST_ITEM_ID_PATTERN = /^TRS-[0-9]{4}$/;
+ 
+-// Call while holding the script lock.
++// Call while holding the script lock. Never adopt columns by their header.
+ function syncInventoryColumnsFromManifest_(spreadsheet, inventorySheet) {
+   const manifestSheet = spreadsheet.getSheetByName('daftar-barang');
+   if (!manifestSheet) {
+     throw new Error('The daftar-barang sheet was not found.');
+   }
+-
+-  const manifestItems = readManifestItems_(manifestSheet);
+-  const activeItemIds = new Set(
+-    manifestItems
+-      .filter(item => item.active)
+-      .map(item => item.id)
+-  );
+-  const columns = getInventoryColumns_(inventorySheet);
+-  const columnsByItemId = readInventoryItemMetadata_(inventorySheet);
+-  const metadataColumnNumbers = new Set(
+-    Array.from(columnsByItemId.values()).map(column => column.columnNumber)
++  const items = readManifestItems_(manifestSheet);
++  const columnsById = readInventoryItemMetadata_(inventorySheet);
++  const managedColumnNumbers = new Set(
++    Array.from(columnsById.values()).map(column => column.columnNumber)
+   );
+-  const manifestNames = new Map();
++  const lastColumn = inventorySheet.getLastColumn();
+ 
+-  for (const item of manifestItems) {
+-    for (const name of [item.name, item.displayName]) {
+-      if (manifestNames.has(name)) {
+-        manifestNames.set(name, null);
+-      } else {
+-        manifestNames.set(name, item.id);
++  // Refuse legacy or manually created headers instead of inventing item IDs.
++  if (lastColumn >= 3) {
++    const headers = inventorySheet.getRange(1, 3, 1, lastColumn - 2)
++      .getDisplayValues()[0];
++    for (let index = 0; index < headers.length; index++) {
++      if (headers[index].trim() && !managedColumnNumbers.has(index + 3)) {
++        throw new Error(
++          'Unmanaged inventory column ' + (index + 3) +
++          '. For initial setup, run resetInventoryData. Manage items in daftar-barang.'
++        );
+       }
+     }
+   }
+ 
+-  // Migrate existing columns whose header exactly identifies one manifest item.
+-  for (const column of columns) {
+-    if (metadataColumnNumbers.has(column.columnNumber)) {
+-      continue;
+-    }
+-
+-    const itemId = manifestNames.get(column.title);
+-    if (!itemId) {
++  let nextColumn = Math.max(
++    2, lastColumn, ...managedColumnNumbers
++  ) + 1;
++  for (const item of items) {
++    let column = columnsById.get(item.id);
++    if (!column && !item.active) {
+       continue;
+     }
+-
+-    addInventoryItemMetadata_(inventorySheet, column.columnNumber, itemId);
+-    metadataColumnNumbers.add(column.columnNumber);
+-    columnsByItemId.set(itemId, {
+-      columnNumber: column.columnNumber,
+-      itemId
+-    });
+-  }
+-
+-  // Add new active items and update the names of existing items.
+-  for (const item of manifestItems.filter(item => item.active)) {
+-    let column = columnsByItemId.get(item.id);
+-
+     if (!column) {
+-      const newColumnNumber = Math.max(inventorySheet.getLastColumn() + 1, 3);
+-      inventorySheet.insertColumnAfter(Math.max(newColumnNumber - 1, 2));
+-      addInventoryItemMetadata_(inventorySheet, newColumnNumber, item.id);
+-      column = {
+-        columnNumber: newColumnNumber,
+-        itemId: item.id
+-      };
+-      columnsByItemId.set(item.id, column);
++      if (nextColumn > inventorySheet.getMaxColumns()) {
++        inventorySheet.insertColumnsAfter(
++          inventorySheet.getMaxColumns(),
++          nextColumn - inventorySheet.getMaxColumns()
++        );
++      }
++      addInventoryItemMetadata_(inventorySheet, nextColumn, item.id);
++      column = { columnNumber: nextColumn, itemId: item.id };
++      columnsById.set(item.id, column);
++      nextColumn++;
+     }
+-
+-    inventorySheet
+-      .getRange(1, column.columnNumber)
+-      .setValue(item.displayName);
++    inventorySheet.getRange(1, column.columnNumber).setValue(item.displayName);
+   }
+ 
+-  // Keep removed columns for history, but remove their headers so they no
+-  // longer appear as questions in the form.
+-  for (const column of readInventoryItemMetadata_(inventorySheet).values()) {
+-    if (!activeItemIds.has(column.itemId)) {
+-      inventorySheet.getRange(1, column.columnNumber).clearContent();
+-    }
+-  }
++  // Inactive/removed columns stay intact for historical corrections.
++  // Form inclusion is decided by the manifest's Aktif value, not the header.
+ }
+ 
+ function readManifestItems_(manifestSheet) {
+   const lastRow = manifestSheet.getLastRow();
+   const lastColumn = manifestSheet.getLastColumn();
+-  if (lastRow < 2 || lastColumn === 0) {
+-    return [];
++  if (lastColumn === 0) {
++    throw new Error('The daftar-barang sheet has no headers.');
+   }
+ 
+   const headers = manifestSheet
+@@ -107,6 +83,17 @@
+     );
+   }
+ 
++  for (const requiredHeader of [
++    'id barang', 'nama barang', 'unit', 'level stok minim', 'aktif'
++  ]) {
++    if (headers.filter(header => header === requiredHeader).length > 1) {
++      throw new Error('Duplicate daftar-barang header: ' + requiredHeader);
++    }
++  }
++  if (lastRow < 2) {
++    return [];
++  }
++
+   const values = manifestSheet
+     .getRange(2, 1, lastRow - 1, lastColumn)
+     .getDisplayValues();
+@@ -120,7 +107,8 @@
+     const unit = row[columnNumbers.unit];
+     const minimumStock = row[columnNumbers.minimumStock];
+     const activeValue = row[columnNumbers.active];
+-    if (!id && !name && !unit && !minimumStock && !activeValue) {
++    if (!id && !name && !unit && !minimumStock &&
++        (activeValue === '' || activeValue.toUpperCase() === 'FALSE')) {
+       continue;
+     }
+ 
+@@ -140,6 +128,10 @@
+       throw new Error('The unit in daftar-barang row ' + (index + 2) + ' is empty.');
+     }
+ 
++    if (!['', 'TRUE', 'FALSE'].includes(activeValue.toUpperCase())) {
++      throw new Error('Aktif must be TRUE or FALSE in daftar-barang row ' + (index + 2) + '.');
++    }
++
+     seenIds.add(id);
+     items.push({
+       id,
+@@ -160,14 +152,22 @@
+     .withLocationType(SpreadsheetApp.DeveloperMetadataLocationType.COLUMN)
+     .find();
+   const columnsByItemId = new Map();
++  const seenColumns = new Set();
+ 
+   for (const entry of metadata) {
+     const itemId = entry.getValue();
+     const columnNumber = entry.getLocation().getColumn().getColumn();
+-    if (!itemId || columnsByItemId.has(itemId)) {
++    if (!MANIFEST_ITEM_ID_PATTERN.test(itemId) ||
++        columnsByItemId.has(itemId) || seenColumns.has(columnNumber) ||
++        columnNumber < 3) {
+       throw new Error('Each inventory item must have exactly one column metadata ID.');
+     }
+-    columnsByItemId.set(itemId, { columnNumber, itemId });
++    seenColumns.add(columnNumber);
++    columnsByItemId.set(itemId, {
++      columnNumber,
++      itemId,
++      title: sheet.getRange(1, columnNumber).getDisplayValue().trim()
++    });
+   }
+ 
+   return columnsByItemId;
+diff --git a/src/sheets/DashboardData.js b/src/sheets/DashboardData.js
+--- a/src/sheets/DashboardData.js
++++ b/src/sheets/DashboardData.js
+@@ -9,6 +9,7 @@
+       throw new Error('The stok-barang sheet was not found.');
+     }
+ 
++    syncInventoryColumnsFromManifest_(spreadsheet, sourceSheet);
+     const columns = getInventoryColumns_(sourceSheet);
+     syncDashboardData_(spreadsheet, sourceSheet, columns);
+   } finally {
+@@ -20,16 +21,19 @@
+ function syncDashboardData_(spreadsheet, sourceSheet, columns) {
+   const dashboardSheet = getOrCreateDashboardSheet_(spreadsheet);
+   const existingRows = readDashboardRows_(dashboardSheet);
+-  const activeColumns = columns.filter(column => column.title !== '');
+-  const activeMetadataIds = new Set(
+-    activeColumns.map(column => String(column.metadataId))
++  if (existingRows.some(row => !MANIFEST_ITEM_ID_PATTERN.test(String(row[1])))) {
++    throw new Error('Legacy dashboard IDs found. Run resetInventoryData once.');
++  }
++  const retainedColumns = columns.filter(column => column.title !== '');
++  const retainedInventoryIds = new Set(
++    retainedColumns.map(column => column.itemId)
+   );
+ 
+-  // Keep history for columns that have been deleted or temporarily unnamed.
++  // Rebuild all retained columns, including inactive items; keep deleted-column history.
+   const preservedRows = existingRows.filter(row =>
+-    !activeMetadataIds.has(String(row[1]))
++    !retainedInventoryIds.has(String(row[1]))
+   );
+-  const currentRows = buildCurrentDashboardRows_(sourceSheet, activeColumns);
++  const currentRows = buildCurrentDashboardRows_(sourceSheet, retainedColumns);
+   const dashboardRows = preservedRows.concat(currentRows);
+ 
+   dashboardRows.sort((first, second) => {
+@@ -126,15 +130,15 @@
+         rowIndex + 2,
+         column.columnNumber
+       );
+-      const metadataId = String(column.metadataId);
+-      const key = dateKey + ':' + metadataId;
++      const inventoryId = column.itemId;
++      const key = dateKey + ':' + inventoryId;
+ 
+       if (keys.has(key)) {
+         throw new Error(
+           'Duplicate dashboard value for date ' +
+           dateKey +
+           ' and product ID ' +
+-          metadataId +
++          inventoryId +
+           '.'
+         );
+       }
+@@ -142,7 +146,7 @@
+ 
+       rows.push([
+         new Date(date.getTime()),
+-        metadataId,
++        inventoryId,
+         column.title,
+         quantity
+       ]);
+@@ -194,6 +198,7 @@
+       throw new Error('The stok-barang sheet was not found.');
+     }
+ 
++    syncInventoryColumnsFromManifest_(spreadsheet, sourceSheet);
+     const columns = getInventoryColumns_(sourceSheet);
+     syncDashboardData_(spreadsheet, sourceSheet, columns);
+   } finally {
+diff --git a/src/forms/InventoryForm.js b/src/forms/InventoryForm.js
+--- a/src/forms/InventoryForm.js
++++ b/src/forms/InventoryForm.js
+@@ -12,7 +12,6 @@
+   const prefix = getInventoryFormMappingPrefix_(sheet, form.getId());
+   const initializedKey = prefix + 'INITIALIZED';
+   const savedProperties = properties.getProperties();
+-  const initialized = savedProperties[initializedKey] === 'true';
+   const mappings = new Map();
+   const claimedItemIds = new Set();
+   const items = form.getItems();
+@@ -26,8 +25,8 @@
+       continue;
+     }
+ 
+-    const metadataId = key.slice(prefix.length);
+-    if (!/^[0-9]+$/.test(metadataId) || !/^-?[0-9]+$/.test(itemId)) {
++    const inventoryId = key.slice(prefix.length);
++    if (!MANIFEST_ITEM_ID_PATTERN.test(inventoryId) || !/^-?[0-9]+$/.test(itemId)) {
+       throw new Error('Invalid inventory question mapping: ' + key);
+     }
+     if (claimedItemIds.has(itemId)) {
+@@ -39,48 +38,16 @@
+       throw new Error('Mapped inventory question is no longer a text field: ' + itemId);
+     }
+ 
+-    mappings.set(metadataId, itemId);
++    mappings.set(inventoryId, itemId);
+     claimedItemIds.add(itemId);
+   }
+ 
+-  const titleCounts = new Map();
+-  for (const column of columns) {
+-    if (column.title !== '') {
+-      titleCounts.set(column.title, (titleCounts.get(column.title) || 0) + 1);
+-    }
+-  }
+-
+-  // Plan initial adoption before making changes; ambiguous matches need review.
+-  const plans = [];
+-  for (const column of columns) {
+-    const metadataId = String(column.metadataId);
+-    const mappedItemId = mappings.get(metadataId);
+-    let item = itemsById.get(mappedItemId);
+-
+-    if (column.title === '') {
+-      continue;
+-    }
+-
+-    if (!initialized && !mappedItemId) {
+-      const candidates = items.filter(candidate =>
+-        candidate.getType() === FormApp.ItemType.TEXT &&
+-        candidate.getTitle() === column.title &&
+-        !claimedItemIds.has(String(candidate.getId()))
+-      );
+-
+-      if (candidates.length > 1 ||
+-          (candidates.length === 1 && titleCounts.get(column.title) > 1)) {
+-        throw new Error('Ambiguous existing question for header: ' + column.title);
+-      }
+-
+-      item = candidates[0];
+-      if (item) {
+-        claimedItemIds.add(String(item.getId()));
+-      }
+-    }
+-
+-    plans.push({ column, metadataId, item });
+-  }
++  const activeColumns = columns.filter(column => column.active);
++  const plans = activeColumns.map(column => ({
++    column,
++    inventoryId: column.itemId,
++    item: itemsById.get(mappings.get(column.itemId))
++  }));
+ 
+   // Persist each association as it is established so retries can reuse it.
+   for (const plan of plans) {
+@@ -89,8 +56,8 @@
+       : form.addTextItem().setTitle(plan.column.title);
+     const itemId = String(item.getId());
+ 
+-    properties.setProperty(prefix + plan.metadataId, itemId);
+-    mappings.set(plan.metadataId, itemId);
++    properties.setProperty(prefix + plan.inventoryId, itemId);
++    mappings.set(plan.inventoryId, itemId);
+     itemsById.set(itemId, item);
+ 
+     item.setTitle(plan.column.title)
+@@ -98,12 +65,12 @@
+       .setValidation(validation);
+   }
+ 
+-  // Blank headers still have metadata, so they are not treated as deletions.
+-  const liveMetadataIds = new Set(
+-    columns.map(column => String(column.metadataId))
++  // Only active manifest items belong in the form.
++  const liveInventoryIds = new Set(
++    activeColumns.map(column => column.itemId)
+   );
+-  for (const [metadataId, itemId] of mappings) {
+-    if (liveMetadataIds.has(metadataId)) {
++  for (const [inventoryId, itemId] of mappings) {
++    if (liveInventoryIds.has(inventoryId)) {
+       continue;
+     }
+ 
+@@ -111,13 +78,13 @@
+     if (item) {
+       form.deleteItem(item);
+     }
+-    properties.deleteProperty(prefix + metadataId);
+-    mappings.delete(metadataId);
++    properties.deleteProperty(prefix + inventoryId);
++    mappings.delete(inventoryId);
+   }
+ 
+   // Reorder managed questions within their slots, preserving unrelated items.
+-  const orderedItems = columns
+-    .map(column => itemsById.get(mappings.get(String(column.metadataId))))
++  const orderedItems = activeColumns
++    .map(column => itemsById.get(mappings.get(column.itemId)))
+     .filter(item => item !== undefined);
+   const managedIds = new Set(orderedItems.map(item => String(item.getId())));
+   let managedIndex = 0;
+diff --git a/src/triggers/InventoryTriggers.js b/src/triggers/InventoryTriggers.js
+--- a/src/triggers/InventoryTriggers.js
++++ b/src/triggers/InventoryTriggers.js
+@@ -100,7 +100,7 @@
+ }
+ 
+ function handleInventoryColumnChange(event) {
+-  if (!event || !['INSERT_COLUMN', 'REMOVE_COLUMN', 'OTHER'].includes(event.changeType)) {
++  if (!event || !['INSERT_COLUMN', 'REMOVE_COLUMN', 'INSERT_ROW', 'REMOVE_ROW', 'OTHER'].includes(event.changeType)) {
+     return;
+   }
+ 
+@@ -115,9 +115,8 @@
+   const range = event.range;
+   const editedSheetName = range.getSheet().getName();
+   if (editedSheetName === 'daftar-barang') {
+-    if (range.getRow() >= 2 && range.getColumn() <= 5) {
+-      createFormFromSheet(event);
+-    }
++    // Headers may be reordered, and a paste may include the header row.
++    createFormFromSheet(event);
+     return;
+   }
+ 
+diff --git a/src/automations/ResetInventory.js b/src/automations/ResetInventory.js
+new file mode 100644
+--- /dev/null
++++ b/src/automations/ResetInventory.js
+@@ -0,0 +1,62 @@
++// Destructive setup operation: run manually once, never from a trigger.
++function resetInventoryData() {
++  const lock = LockService.getScriptLock();
++  lock.waitLock(30000);
++
++  try {
++    const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
++    const inventorySheet = spreadsheet.getSheetByName('stok-barang');
++    const manifestSheet = spreadsheet.getSheetByName('daftar-barang');
++    if (!inventorySheet || !manifestSheet) {
++      throw new Error('Both stok-barang and daftar-barang are required.');
++    }
++
++    // Validate the manifest and open existing resources before deleting data.
++    readManifestItems_(manifestSheet);
++    const properties = PropertiesService.getScriptProperties();
++    const formId = properties.getProperty('INVENTORY_FORM_ID');
++    const form = formId ? FormApp.openById(formId) : null;
++    const dashboardSheet = getOrCreateDashboardSheet_(spreadsheet);
++
++    if (form) {
++      form.deleteAllResponses();
++      for (const item of form.getItems().reverse()) {
++        form.deleteItem(item);
++      }
++      const prefix = getInventoryFormMappingPrefix_(inventorySheet, formId);
++      for (const key of Object.keys(properties.getProperties())) {
++        if (key.startsWith(prefix)) {
++          properties.deleteProperty(key);
++        }
++      }
++    }
++
++    for (const key of ['INVENTORY_COLUMN', INVENTORY_ITEM_METADATA_KEY]) {
++      const entries = inventorySheet.createDeveloperMetadataFinder()
++        .withKey(key)
++        .find();
++      for (const entry of entries) {
++        entry.remove();
++      }
++    }
++
++    // Preserve columns A/B and their headings; clear all old dated records.
++    if (inventorySheet.getMaxRows() > 1) {
++      inventorySheet.getRange(
++        2, 1, inventorySheet.getMaxRows() - 1, inventorySheet.getMaxColumns()
++      ).clearContent();
++    }
++    if (inventorySheet.getMaxColumns() > 2) {
++      inventorySheet.deleteColumns(3, inventorySheet.getMaxColumns() - 2);
++    }
++    if (dashboardSheet.getLastRow() > 1) {
++      dashboardSheet.getRange(2, 1, dashboardSheet.getLastRow() - 1, 4)
++        .clearContent();
++    }
++
++    refreshInventorySystem_(spreadsheet, inventorySheet);
++    Logger.log('Inventory reset completed. Run installInventoryTriggers if needed.');
++  } finally {
++    lock.releaseLock();
++  }
++}
