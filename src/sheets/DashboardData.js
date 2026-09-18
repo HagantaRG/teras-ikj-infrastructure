@@ -64,7 +64,7 @@ function syncDashboardData_(spreadsheet, sourceSheet, columns) {
 
 function getOrCreateDashboardSheet_(spreadsheet) {
   const sheetName = 'dashboard-data';
-  const headers = ['Tanggal', 'ID Produk', 'Produk', 'Jumlah'];
+  const headers = ['Tanggal', 'ID Produk', 'Produk/Unit', 'Jumlah'];
   let sheet = spreadsheet.getSheetByName(sheetName);
 
   if (!sheet) {
