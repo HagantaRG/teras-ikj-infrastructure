@@ -43,7 +43,18 @@ function recordDeliveryFormResponse_(event) {
       event.response.getItemResponses(), itemIdsByQuestion,
       properties.getProperty('DELIVERY_NOTES_ITEM_ID'), manifestItems, date
     );
-    appendDeliveryRows_(sheet, rows);
+    if (rows.length > 0) {
+      appendDeliveryRows_(sheet, rows);
+
+      // A new delivery can change usage for a stock count already recorded today.
+      const inventorySheet = spreadsheet.getSheetByName('stok-barang');
+      if (!inventorySheet) {
+        throw new Error('The stok-barang sheet was not found.');
+      }
+      syncInventoryColumnsFromManifest_(spreadsheet, inventorySheet);
+      const inventoryColumns = getInventoryColumns_(inventorySheet);
+      syncDashboardData_(spreadsheet, inventorySheet, inventoryColumns);
+    }
   } finally {
     lock.releaseLock();
   }

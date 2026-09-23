@@ -1,0 +1,1096 @@
+diff --git a/src/sheets/DashboardData.js b/src/sheets/DashboardData.js
+--- a/src/sheets/DashboardData.js
++++ b/src/sheets/DashboardData.js
+@@ -1,207 +1,322 @@
+-function createDashboardData() {
+-  const lock = LockService.getScriptLock();
+-  lock.waitLock(30000);
+-
+-  try {
+-    const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+-    const sourceSheet = spreadsheet.getSheetByName('stok-barang');
+-    if (!sourceSheet) {
+-      throw new Error('The stok-barang sheet was not found.');
+-    }
+-
+-    syncInventoryColumnsFromManifest_(spreadsheet, sourceSheet);
+-    const columns = getInventoryColumns_(sourceSheet);
+-    syncDashboardData_(spreadsheet, sourceSheet, columns);
+-  } finally {
+-    lock.releaseLock();
+-  }
+-}
+-
+-// Call while holding the script lock.
+-function syncDashboardData_(spreadsheet, sourceSheet, columns) {
+-  const dashboardSheet = getOrCreateDashboardSheet_(spreadsheet);
+-  const existingRows = readDashboardRows_(dashboardSheet);
+-  if (existingRows.some(row => !MANIFEST_ITEM_ID_PATTERN.test(String(row[1])))) {
+-    throw new Error('Legacy dashboard IDs found. Run resetInventoryData once.');
+-  }
+-  const retainedColumns = columns.filter(column => column.title !== '');
+-  const retainedInventoryIds = new Set(
+-    retainedColumns.map(column => column.itemId)
+-  );
+-
+-  // Rebuild all retained columns, including inactive items; keep deleted-column history.
+-  const preservedRows = existingRows.filter(row =>
+-    !retainedInventoryIds.has(String(row[1]))
+-  );
+-  const currentRows = buildCurrentDashboardRows_(sourceSheet, retainedColumns);
+-  const dashboardRows = preservedRows.concat(currentRows);
+-
+-  dashboardRows.sort((first, second) => {
+-    const dateDifference = first[0].getTime() - second[0].getTime();
+-    if (dateDifference !== 0) {
+-      return dateDifference;
+-    }
+-    return String(first[2]).localeCompare(String(second[2]), 'id');
+-  });
+-
+-  const lastRow = dashboardSheet.getLastRow();
+-  if (lastRow >= 2) {
+-    dashboardSheet.getRange(2, 1, lastRow - 1, 4).clearContent();
+-  }
+-
+-  if (dashboardRows.length > 0) {
+-    dashboardSheet
+-      .getRange(2, 1, dashboardRows.length, 4)
+-      .setValues(dashboardRows);
+-    dashboardSheet
+-      .getRange(2, 1, dashboardRows.length, 1)
+-      .setNumberFormat('yyyy-mm-dd');
+-    dashboardSheet
+-      .getRange(2, 2, dashboardRows.length, 1)
+-      .setNumberFormat('@');
+-  }
+-}
+-
+-function getOrCreateDashboardSheet_(spreadsheet) {
+-  const sheetName = 'dashboard-data';
+-  const headers = ['Tanggal', 'ID Produk', 'Produk/Unit', 'Jumlah'];
+-  let sheet = spreadsheet.getSheetByName(sheetName);
+-
+-  if (!sheet) {
+-    sheet = spreadsheet.insertSheet(sheetName);
+-    sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+-    sheet.setFrozenRows(1);
+-    return sheet;
+-  }
+-
+-  const actualHeaders = sheet
+-    .getRange(1, 1, 1, headers.length)
+-    .getDisplayValues()[0];
+-
+-  if (actualHeaders.some((header, index) => header !== headers[index])) {
+-    throw new Error(
+-      'The dashboard-data sheet does not have the expected columns.'
+-    );
+-  }
+-
+-  return sheet;
+-}
+-
+-function buildCurrentDashboardRows_(sourceSheet, columns) {
+-  const lastRow = sourceSheet.getLastRow();
+-  if (lastRow < 2 || columns.length === 0) {
+-    return [];
+-  }
+-
+-  const lastInventoryColumn = Math.max(
+-    ...columns.map(column => column.columnNumber)
+-  );
+-  const dates = sourceSheet
+-    .getRange(2, 2, lastRow - 1, 1)
+-    .getValues();
+-  const inventoryValues = sourceSheet
+-    .getRange(2, 3, lastRow - 1, lastInventoryColumn - 2)
+-    .getValues();
+-  const rows = [];
+-  const keys = new Set();
+-  const timeZone = Session.getScriptTimeZone();
+-
+-  for (let rowIndex = 0; rowIndex < dates.length; rowIndex++) {
+-    const date = dates[rowIndex][0];
+-    if (date === '') {
+-      continue;
+-    }
+-    if (!(date instanceof Date) || Number.isNaN(date.getTime())) {
+-      throw new Error(
+-        'stok-barang row ' + (rowIndex + 2) + ' does not contain a valid date.'
+-      );
+-    }
+-
+-    const dateKey = Utilities.formatDate(date, timeZone, 'yyyy-MM-dd');
+-
+-    for (const column of columns) {
+-      const value = inventoryValues[rowIndex][column.columnNumber - 3];
+-      if (value === '' || value === null) {
+-        continue;
+-      }
+-
+-      const quantity = normalizeDashboardQuantity_(
+-        value,
+-        rowIndex + 2,
+-        column.columnNumber
+-      );
+-      const inventoryId = column.itemId;
+-      const key = dateKey + ':' + inventoryId;
+-
+-      if (keys.has(key)) {
+-        throw new Error(
+-          'Duplicate dashboard value for date ' +
+-          dateKey +
+-          ' and product ID ' +
+-          inventoryId +
+-          '.'
+-        );
+-      }
+-      keys.add(key);
+-
+-      rows.push([
+-        new Date(date.getTime()),
+-        inventoryId,
+-        column.title,
+-        quantity
+-      ]);
+-    }
+-  }
+-
+-  return rows;
+-}
+-
+-function readDashboardRows_(dashboardSheet) {
+-  const lastRow = dashboardSheet.getLastRow();
+-  if (lastRow < 2) {
+-    return [];
+-  }
+-
+-  return dashboardSheet
+-    .getRange(2, 1, lastRow - 1, 4)
+-    .getValues()
+-    .filter(row => row.some(value => value !== ''));
+-}
+-
+-function normalizeDashboardQuantity_(value, rowNumber, columnNumber) {
+-  const normalizedValue = typeof value === 'string'
+-    ? value.trim()
+-    : value;
+-  const quantity = Number(normalizedValue);
+-
+-  if (!Number.isInteger(quantity) || quantity < 0) {
+-    throw new Error(
+-      'Invalid inventory quantity at row ' +
+-      rowNumber +
+-      ', column ' +
+-      columnNumber +
+-      '.'
+-    );
+-  }
+-
+-  return quantity;
+-}
+-
+-function syncDashboardAfterSheetEdit_(event) {
+-  const lock = LockService.getScriptLock();
+-  lock.waitLock(30000);
+-
+-  try {
+-    const spreadsheet = event.source;
+-    const sourceSheet = spreadsheet.getSheetByName('stok-barang');
+-    if (!sourceSheet) {
+-      throw new Error('The stok-barang sheet was not found.');
+-    }
+-
+-    syncInventoryColumnsFromManifest_(spreadsheet, sourceSheet);
+-    const columns = getInventoryColumns_(sourceSheet);
+-    syncDashboardData_(spreadsheet, sourceSheet, columns);
+-  } finally {
+-    lock.releaseLock();
+-  }
+-}
++function createDashboardData() {
++  const lock = LockService.getScriptLock();
++  lock.waitLock(30000);
++
++  try {
++    const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
++    const sourceSheet = spreadsheet.getSheetByName('stok-barang');
++    if (!sourceSheet) {
++      throw new Error('The stok-barang sheet was not found.');
++    }
++
++    syncInventoryColumnsFromManifest_(spreadsheet, sourceSheet);
++    const columns = getInventoryColumns_(sourceSheet);
++    syncDashboardData_(spreadsheet, sourceSheet, columns);
++  } finally {
++    lock.releaseLock();
++  }
++}
++
++// Call while holding the script lock.
++function syncDashboardData_(spreadsheet, sourceSheet, columns) {
++  const dashboardSheet = getOrCreateDashboardSheet_(spreadsheet);
++  const existingRows = readDashboardRows_(dashboardSheet);
++  if (existingRows.some(row => !MANIFEST_ITEM_ID_PATTERN.test(String(row[1])))) {
++    throw new Error('Legacy dashboard IDs found. Run resetInventoryData once.');
++  }
++  const retainedColumns = columns.filter(column => column.title !== '');
++  const retainedInventoryIds = new Set(
++    retainedColumns.map(column => column.itemId)
++  );
++
++  // Rebuild all retained columns, including inactive items; keep deleted-column history.
++  const preservedRows = existingRows.filter(row =>
++    !retainedInventoryIds.has(String(row[1]))
++  );
++  const currentRows = buildCurrentDashboardRows_(sourceSheet, retainedColumns, spreadsheet);
++  const dashboardRows = preservedRows.concat(currentRows);
++
++  dashboardRows.sort((first, second) => {
++    const dateDifference = first[0].getTime() - second[0].getTime();
++    if (dateDifference !== 0) {
++      return dateDifference;
++    }
++    return String(first[2]).localeCompare(String(second[2]), 'id');
++  });
++
++  const lastRow = dashboardSheet.getLastRow();
++  if (lastRow >= 2) {
++    dashboardSheet.getRange(2, 1, lastRow - 1, 5).clearContent();
++  }
++
++  if (dashboardRows.length > 0) {
++    dashboardSheet
++      .getRange(2, 1, dashboardRows.length, 5)
++      .setValues(dashboardRows);
++    dashboardSheet
++      .getRange(2, 1, dashboardRows.length, 1)
++      .setNumberFormat('yyyy-mm-dd');
++    dashboardSheet
++      .getRange(2, 2, dashboardRows.length, 1)
++      .setNumberFormat('@');
++  }
++}
++
++function getOrCreateDashboardSheet_(spreadsheet) {
++  const sheetName = 'dashboard-data';
++  const headers = ['Tanggal', 'ID Produk', 'Produk/Unit', 'Jumlah', 'Penggunaan'];
++  let sheet = spreadsheet.getSheetByName(sheetName);
++
++  if (!sheet) {
++    sheet = spreadsheet.insertSheet(sheetName);
++    sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
++    sheet.setFrozenRows(1);
++    return sheet;
++  }
++
++  const actualHeaders = sheet
++    .getRange(1, 1, 1, headers.length)
++    .getDisplayValues()[0];
++
++  if (actualHeaders.some((header, index) => header !== headers[index])) {
++    throw new Error(
++      'The dashboard-data sheet does not have the expected columns.'
++    );
++  }
++
++  return sheet;
++}
++
++function buildCurrentDashboardRows_(sourceSheet, columns, spreadsheet) {
++  const lastRow = sourceSheet.getLastRow();
++  if (lastRow < 2 || columns.length === 0) {
++    return [];
++  }
++
++  const lastInventoryColumn = Math.max(
++    ...columns.map(column => column.columnNumber)
++  );
++  const dates = sourceSheet
++    .getRange(2, 2, lastRow - 1, 1)
++    .getValues();
++  const inventoryValues = sourceSheet
++    .getRange(2, 3, lastRow - 1, lastInventoryColumn - 2)
++    .getValues();
++  const rows = [];
++  const keys = new Set();
++  const timeZone = Session.getScriptTimeZone();
++
++  for (let rowIndex = 0; rowIndex < dates.length; rowIndex++) {
++    const date = dates[rowIndex][0];
++    if (date === '') {
++      continue;
++    }
++    if (!(date instanceof Date) || Number.isNaN(date.getTime())) {
++      throw new Error(
++        'stok-barang row ' + (rowIndex + 2) + ' does not contain a valid date.'
++      );
++    }
++
++    const dateKey = Utilities.formatDate(date, timeZone, 'yyyy-MM-dd');
++
++    for (const column of columns) {
++      const value = inventoryValues[rowIndex][column.columnNumber - 3];
++      if (value === '' || value === null) {
++        continue;
++      }
++
++      const quantity = normalizeDashboardQuantity_(
++        value,
++        rowIndex + 2,
++        column.columnNumber
++      );
++      const inventoryId = column.itemId;
++      const key = dateKey + ':' + inventoryId;
++
++      if (keys.has(key)) {
++        throw new Error(
++          'Duplicate dashboard value for date ' +
++          dateKey +
++          ' and product ID ' +
++          inventoryId +
++          '.'
++        );
++      }
++      keys.add(key);
++
++      rows.push([
++        new Date(date.getTime()),
++        inventoryId,
++        column.title,
++        quantity,
++        ''
++      ]);
++    }
++  }
++
++  return populateUsageValues_(rows, spreadsheet);
++}
++
++function populateUsageValues_(rows, spreadsheet) {
++  const deliveriesByItem = readDeliveryTotalsByItem_(spreadsheet);
++  const timeZone = Session.getScriptTimeZone();
++  const previousStockByItem = new Map();
++
++  rows.sort((first, second) => {
++    const dateDifference = first[0].getTime() - second[0].getTime();
++    return dateDifference || String(first[1]).localeCompare(String(second[1]));
++  });
++
++  for (const row of rows) {
++    const inventoryId = row[1];
++    const currentDay = Utilities.formatDate(row[0], timeZone, 'yyyy-MM-dd');
++    const previousStock = previousStockByItem.get(inventoryId);
++
++    if (previousStock) {
++      const deliveryRows = deliveriesByItem.get(inventoryId) || new Map();
++      const deliveries = sumDeliveriesBetween_(
++        deliveryRows,
++        previousStock.day,
++        currentDay
++      );
++      const usage = previousStock.quantity + deliveries - row[3];
++      if (usage >= 0) {
++        row[4] = usage;
++      }
++    }
++
++    previousStockByItem.set(inventoryId, {
++      day: currentDay,
++      quantity: row[3]
++    });
++  }
++
++  return rows;
++}
++
++function readDeliveryTotalsByItem_(spreadsheet) {
++  const sheet = spreadsheet.getSheetByName('barang-masuk');
++  if (!sheet) {
++    return new Map();
++  }
++
++  const expectedHeaders = ['Tanggal', 'ID Barang', 'Jumlah Masuk', 'Catatan'];
++  const actualHeaders = sheet.getRange(1, 1, 1, expectedHeaders.length)
++    .getDisplayValues()[0];
++  if (actualHeaders.some((header, index) => header !== expectedHeaders[index])) {
++    throw new Error('The barang-masuk sheet does not have the expected columns.');
++  }
++
++  const totalsByItem = new Map();
++  const lastRow = sheet.getLastRow();
++  if (lastRow < 2) {
++    return totalsByItem;
++  }
++
++  const records = sheet.getRange(2, 1, lastRow - 1, 5).getValues();
++  const timeZone = Session.getScriptTimeZone();
++
++  for (let index = 0; index < records.length; index++) {
++    const [date, rawId, rawQuantity, note] = records[index];
++    if (date === '' && rawId === '' && rawQuantity === '' && note === '') {
++      continue;
++    }
++    if (!(date instanceof Date) || Number.isNaN(date.getTime())) {
++      throw new Error('barang-masuk row ' + (index + 2) + ' has an invalid date.');
++    }
++
++    const inventoryId = String(rawId).trim();
++    if (!MANIFEST_ITEM_ID_PATTERN.test(inventoryId)) {
++      throw new Error('barang-masuk row ' + (index + 2) + ' has an invalid ID Barang.');
++    }
++    const quantity = normalizeDeliveryQuantity_(rawQuantity, index + 2);
++    const day = Utilities.formatDate(date, timeZone, 'yyyy-MM-dd');
++    if (!totalsByItem.has(inventoryId)) {
++      totalsByItem.set(inventoryId, new Map());
++    }
++    const totalsByDay = totalsByItem.get(inventoryId);
++    const total = (totalsByDay.get(day) || 0) + quantity;
++    if (!Number.isSafeInteger(total)) {
++      throw new Error('The delivery total is too large for ' + inventoryId + ' on ' + day + '.');
++    }
++    totalsByDay.set(day, total);
++  }
++
++  return totalsByItem;
++}
++
++function normalizeDeliveryQuantity_(value, rowNumber) {
++  const quantity = typeof value === 'number'
++    ? value
++    : Number(String(value).trim());
++  if (!Number.isSafeInteger(quantity) || quantity <= 0) {
++    throw new Error(
++      'barang-masuk row ' + rowNumber +
++      ' must contain a positive whole-number delivery quantity.'
++    );
++  }
++  return quantity;
++}
++
++function sumDeliveriesBetween_(deliveriesByDay, previousStockDay, currentStockDay) {
++  let total = 0;
++  for (const [deliveryDay, quantity] of deliveriesByDay) {
++    if (deliveryDay > previousStockDay && deliveryDay <= currentStockDay) {
++      total += quantity;
++    }
++  }
++  if (!Number.isSafeInteger(total)) {
++    throw new Error('Delivery total between recorded stock dates is too large.');
++  }
++  return total;
++}
++
++function readDashboardRows_(dashboardSheet) {
++  const lastRow = dashboardSheet.getLastRow();
++  if (lastRow < 2) {
++    return [];
++  }
++
++  return dashboardSheet
++    .getRange(2, 1, lastRow - 1, 5)
++    .getValues()
++    .filter(row => row.some(value => value !== ''));
++}
++
++function normalizeDashboardQuantity_(value, rowNumber, columnNumber) {
++  const normalizedValue = typeof value === 'string'
++    ? value.trim()
++    : value;
++  const quantity = Number(normalizedValue);
++
++  if (!Number.isInteger(quantity) || quantity < 0) {
++    throw new Error(
++      'Invalid inventory quantity at row ' +
++      rowNumber +
++      ', column ' +
++      columnNumber +
++      '.'
++    );
++  }
++
++  return quantity;
++}
++
++function syncDashboardAfterSheetEdit_(event) {
++  const lock = LockService.getScriptLock();
++  lock.waitLock(30000);
++
++  try {
++    const spreadsheet = event.source;
++    const sourceSheet = spreadsheet.getSheetByName('stok-barang');
++    if (!sourceSheet) {
++      throw new Error('The stok-barang sheet was not found.');
++    }
++
++    syncInventoryColumnsFromManifest_(spreadsheet, sourceSheet);
++    const columns = getInventoryColumns_(sourceSheet);
++    syncDashboardData_(spreadsheet, sourceSheet, columns);
++  } finally {
++    lock.releaseLock();
++  }
++}
+diff --git a/src/automations/DeliveryResponses.js b/src/automations/DeliveryResponses.js
+--- a/src/automations/DeliveryResponses.js
++++ b/src/automations/DeliveryResponses.js
+@@ -1,86 +1,97 @@
+-function recordDeliveryFormResponse_(event) {
+-  if (!event || !event.source || !event.response) {
+-    throw new Error('A Google Forms submission event is required.');
+-  }
+-  const lock = LockService.getScriptLock();
+-  lock.waitLock(30000);
+-  try {
+-    const properties = PropertiesService.getScriptProperties();
+-    const spreadsheetId = properties.getProperty('DELIVERY_SPREADSHEET_ID');
+-    const formId = properties.getProperty('DELIVERY_FORM_ID');
+-    if (!spreadsheetId || formId !== event.source.getId()) {
+-      throw new Error('This submission does not match the configured delivery form.');
+-    }
+-    const spreadsheet = SpreadsheetApp.openById(spreadsheetId);
+-    const manifestItems = getDeliveryManifestItems_(spreadsheet);
+-    const sheet = getOrCreateDeliverySheet_(spreadsheet);
+-    const prefix = getDeliveryFormMappingPrefix_(sheet, formId);
+-    const saved = properties.getProperties();
+-    const itemIdsByQuestion = new Map();
+-    for (const [key, questionId] of Object.entries(saved)) {
+-      if (!key.startsWith(prefix) || key === prefix + 'INITIALIZED') {
+-        continue;
+-      }
+-      const itemId = key.slice(prefix.length);
+-      if (!MANIFEST_ITEM_ID_PATTERN.test(itemId) || itemIdsByQuestion.has(questionId)) {
+-        throw new Error('Invalid or duplicate delivery question mapping: ' + key);
+-      }
+-      itemIdsByQuestion.set(String(questionId), itemId);
+-    }
+-
+-    const timestamp = event.response.getTimestamp();
+-    if (!(timestamp instanceof Date) || Number.isNaN(timestamp.getTime())) {
+-      throw new Error('The delivery submission has no valid timestamp.');
+-    }
+-    const day = Utilities.formatDate(
+-      timestamp, Session.getScriptTimeZone(), 'yyyy-MM-dd'
+-    );
+-    // Store the chosen calendar day in the destination sheet's timezone.
+-    const date = Utilities.parseDate(
+-      day, spreadsheet.getSpreadsheetTimeZone(), 'yyyy-MM-dd'
+-    );
+-    const rows = buildDeliveryRows_(
+-      event.response.getItemResponses(), itemIdsByQuestion,
+-      properties.getProperty('DELIVERY_NOTES_ITEM_ID'), manifestItems, date
+-    );
+-    appendDeliveryRows_(sheet, rows);
+-  } finally {
+-    lock.releaseLock();
+-  }
+-}
+-
+-function buildDeliveryRows_(responses, itemIdsByQuestion, notesQuestionId, items, date) {
+-  const activeIds = new Set(items.filter(item => item.active).map(item => item.id));
+-  const quantities = new Map();
+-  let notes = '';
+-
+-  // Validate the entire submission before appending any rows.
+-  for (const response of responses) {
+-    const questionId = String(response.getItem().getId());
+-    const answer = String(response.getResponse()).trim();
+-    if (questionId === notesQuestionId) {
+-      notes = answer;
+-      continue;
+-    }
+-    if (answer === '') {
+-      continue;
+-    }
+-    const itemId = itemIdsByQuestion.get(questionId);
+-    if (!itemId || !activeIds.has(itemId)) {
+-      throw new Error('A delivered item is no longer active or mapped: ' + questionId);
+-    }
+-    if (!/^0*[1-9][0-9]*$/.test(answer) || !Number.isSafeInteger(Number(answer))) {
+-      throw new Error('Delivery quantity must be a positive whole number for ' + itemId);
+-    }
+-    if (quantities.has(itemId)) {
+-      throw new Error('Multiple answers were supplied for delivery item ' + itemId);
+-    }
+-    quantities.set(itemId, Number(answer));
+-  }
+-
+-  // User notes must remain text, including notes beginning with an equals sign.
+-  const cellNotes = notes.startsWith('=') ? "'" + notes : notes;
+-  return Array.from(quantities, ([itemId, quantity]) => [
+-    date, itemId, quantity, cellNotes
+-  ]);
+-}
++function recordDeliveryFormResponse_(event) {
++  if (!event || !event.source || !event.response) {
++    throw new Error('A Google Forms submission event is required.');
++  }
++  const lock = LockService.getScriptLock();
++  lock.waitLock(30000);
++  try {
++    const properties = PropertiesService.getScriptProperties();
++    const spreadsheetId = properties.getProperty('DELIVERY_SPREADSHEET_ID');
++    const formId = properties.getProperty('DELIVERY_FORM_ID');
++    if (!spreadsheetId || formId !== event.source.getId()) {
++      throw new Error('This submission does not match the configured delivery form.');
++    }
++    const spreadsheet = SpreadsheetApp.openById(spreadsheetId);
++    const manifestItems = getDeliveryManifestItems_(spreadsheet);
++    const sheet = getOrCreateDeliverySheet_(spreadsheet);
++    const prefix = getDeliveryFormMappingPrefix_(sheet, formId);
++    const saved = properties.getProperties();
++    const itemIdsByQuestion = new Map();
++    for (const [key, questionId] of Object.entries(saved)) {
++      if (!key.startsWith(prefix) || key === prefix + 'INITIALIZED') {
++        continue;
++      }
++      const itemId = key.slice(prefix.length);
++      if (!MANIFEST_ITEM_ID_PATTERN.test(itemId) || itemIdsByQuestion.has(questionId)) {
++        throw new Error('Invalid or duplicate delivery question mapping: ' + key);
++      }
++      itemIdsByQuestion.set(String(questionId), itemId);
++    }
++
++    const timestamp = event.response.getTimestamp();
++    if (!(timestamp instanceof Date) || Number.isNaN(timestamp.getTime())) {
++      throw new Error('The delivery submission has no valid timestamp.');
++    }
++    const day = Utilities.formatDate(
++      timestamp, Session.getScriptTimeZone(), 'yyyy-MM-dd'
++    );
++    // Store the chosen calendar day in the destination sheet's timezone.
++    const date = Utilities.parseDate(
++      day, spreadsheet.getSpreadsheetTimeZone(), 'yyyy-MM-dd'
++    );
++    const rows = buildDeliveryRows_(
++      event.response.getItemResponses(), itemIdsByQuestion,
++      properties.getProperty('DELIVERY_NOTES_ITEM_ID'), manifestItems, date
++    );
++    if (rows.length > 0) {
++      appendDeliveryRows_(sheet, rows);
++
++      // A new delivery can change usage for a stock count already recorded today.
++      const inventorySheet = spreadsheet.getSheetByName('stok-barang');
++      if (!inventorySheet) {
++        throw new Error('The stok-barang sheet was not found.');
++      }
++      syncInventoryColumnsFromManifest_(spreadsheet, inventorySheet);
++      const inventoryColumns = getInventoryColumns_(inventorySheet);
++      syncDashboardData_(spreadsheet, inventorySheet, inventoryColumns);
++    }
++  } finally {
++    lock.releaseLock();
++  }
++}
++
++function buildDeliveryRows_(responses, itemIdsByQuestion, notesQuestionId, items, date) {
++  const activeIds = new Set(items.filter(item => item.active).map(item => item.id));
++  const quantities = new Map();
++  let notes = '';
++
++  // Validate the entire submission before appending any rows.
++  for (const response of responses) {
++    const questionId = String(response.getItem().getId());
++    const answer = String(response.getResponse()).trim();
++    if (questionId === notesQuestionId) {
++      notes = answer;
++      continue;
++    }
++    if (answer === '') {
++      continue;
++    }
++    const itemId = itemIdsByQuestion.get(questionId);
++    if (!itemId || !activeIds.has(itemId)) {
++      throw new Error('A delivered item is no longer active or mapped: ' + questionId);
++    }
++    if (!/^0*[1-9][0-9]*$/.test(answer) || !Number.isSafeInteger(Number(answer))) {
++      throw new Error('Delivery quantity must be a positive whole number for ' + itemId);
++    }
++    if (quantities.has(itemId)) {
++      throw new Error('Multiple answers were supplied for delivery item ' + itemId);
++    }
++    quantities.set(itemId, Number(answer));
++  }
++
++  // User notes must remain text, including notes beginning with an equals sign.
++  const cellNotes = notes.startsWith('=') ? "'" + notes : notes;
++  return Array.from(quantities, ([itemId, quantity]) => [
++    date, itemId, quantity, cellNotes
++  ]);
++}
+diff --git a/src/triggers/DeliveryTriggers.js b/src/triggers/DeliveryTriggers.js
+--- a/src/triggers/DeliveryTriggers.js
++++ b/src/triggers/DeliveryTriggers.js
+@@ -1,95 +1,103 @@
+-function installDeliveryTriggers() {
+-  const lock = LockService.getScriptLock();
+-  lock.waitLock(30000);
+-  try {
+-    const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+-    const properties = PropertiesService.getScriptProperties();
+-    const formId = properties.getProperty('DELIVERY_FORM_ID');
+-    if (!spreadsheet || !formId ||
+-        properties.getProperty('DELIVERY_SPREADSHEET_ID') !== spreadsheet.getId()) {
+-      throw new Error('Run createDeliveryForm from this spreadsheet first.');
+-    }
+-    const form = FormApp.openById(formId);
+-    const definitions = [
+-      {
+-        handler: 'handleDeliveryFormSubmit',
+-        sourceId: formId,
+-        eventType: ScriptApp.EventType.ON_FORM_SUBMIT
+-      },
+-      {
+-        handler: 'handleDeliveryManifestEdit',
+-        sourceId: spreadsheet.getId(),
+-        eventType: ScriptApp.EventType.ON_EDIT
+-      },
+-      {
+-        handler: 'handleDeliveryManifestChange',
+-        sourceId: spreadsheet.getId(),
+-        eventType: ScriptApp.EventType.ON_CHANGE
+-      }
+-    ];
+-    const existing = ScriptApp.getProjectTriggers();
+-    for (const definition of definitions) {
+-      const found = existing.some(trigger =>
+-        trigger.getHandlerFunction() === definition.handler &&
+-        trigger.getTriggerSourceId() === definition.sourceId &&
+-        trigger.getEventType() === definition.eventType
+-      );
+-      if (found) {
+-        continue;
+-      }
+-      const builder = ScriptApp.newTrigger(definition.handler);
+-      if (definition.eventType === ScriptApp.EventType.ON_FORM_SUBMIT) {
+-        builder.forForm(form).onFormSubmit().create();
+-      } else if (definition.eventType === ScriptApp.EventType.ON_EDIT) {
+-        builder.forSpreadsheet(spreadsheet).onEdit().create();
+-      } else {
+-        builder.forSpreadsheet(spreadsheet).onChange().create();
+-      }
+-    }
+-  } finally {
+-    lock.releaseLock();
+-  }
+-}
+-
+-function removeDeliveryTriggers() {
+-  const properties = PropertiesService.getScriptProperties();
+-  const sourceIds = new Set([
+-    properties.getProperty('DELIVERY_SPREADSHEET_ID'),
+-    properties.getProperty('DELIVERY_FORM_ID')
+-  ]);
+-  const handlers = new Set([
+-    'handleDeliveryFormSubmit', 'handleDeliveryManifestEdit', 'handleDeliveryManifestChange'
+-  ]);
+-  for (const trigger of ScriptApp.getProjectTriggers()) {
+-    if (handlers.has(trigger.getHandlerFunction()) &&
+-        sourceIds.has(trigger.getTriggerSourceId())) {
+-      ScriptApp.deleteTrigger(trigger);
+-    }
+-  }
+-}
+-
+-function handleDeliveryFormSubmit(event) {
+-  recordDeliveryFormResponse_(event);
+-}
+-
+-function handleDeliveryManifestEdit(event) {
+-  if (event && event.range && event.range.getSheet().getName() === 'daftar-barang') {
+-    refreshConfiguredDeliveryForm_(event);
+-  }
+-}
+-
+-function handleDeliveryManifestChange(event) {
+-  const changeTypes = ['INSERT_ROW', 'REMOVE_ROW', 'INSERT_COLUMN', 'REMOVE_COLUMN', 'OTHER'];
+-  if (event && changeTypes.includes(event.changeType)) {
+-    refreshConfiguredDeliveryForm_(event);
+-  }
+-}
+-
+-function refreshConfiguredDeliveryForm_(event) {
+-  const properties = PropertiesService.getScriptProperties();
+-  if (event.source &&
+-      event.source.getId() === properties.getProperty('DELIVERY_SPREADSHEET_ID') &&
+-      properties.getProperty('DELIVERY_FORM_ID')) {
+-    createDeliveryForm(event);
+-  }
+-}
++function installDeliveryTriggers() {
++  const lock = LockService.getScriptLock();
++  lock.waitLock(30000);
++  try {
++    const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
++    const properties = PropertiesService.getScriptProperties();
++    const formId = properties.getProperty('DELIVERY_FORM_ID');
++    if (!spreadsheet || !formId ||
++        properties.getProperty('DELIVERY_SPREADSHEET_ID') !== spreadsheet.getId()) {
++      throw new Error('Run createDeliveryForm from this spreadsheet first.');
++    }
++    const form = FormApp.openById(formId);
++    const definitions = [
++      {
++        handler: 'handleDeliveryFormSubmit',
++        sourceId: formId,
++        eventType: ScriptApp.EventType.ON_FORM_SUBMIT
++      },
++      {
++        handler: 'handleDeliveryManifestEdit',
++        sourceId: spreadsheet.getId(),
++        eventType: ScriptApp.EventType.ON_EDIT
++      },
++      {
++        handler: 'handleDeliveryManifestChange',
++        sourceId: spreadsheet.getId(),
++        eventType: ScriptApp.EventType.ON_CHANGE
++      }
++    ];
++    const existing = ScriptApp.getProjectTriggers();
++    for (const definition of definitions) {
++      const found = existing.some(trigger =>
++        trigger.getHandlerFunction() === definition.handler &&
++        trigger.getTriggerSourceId() === definition.sourceId &&
++        trigger.getEventType() === definition.eventType
++      );
++      if (found) {
++        continue;
++      }
++      const builder = ScriptApp.newTrigger(definition.handler);
++      if (definition.eventType === ScriptApp.EventType.ON_FORM_SUBMIT) {
++        builder.forForm(form).onFormSubmit().create();
++      } else if (definition.eventType === ScriptApp.EventType.ON_EDIT) {
++        builder.forSpreadsheet(spreadsheet).onEdit().create();
++      } else {
++        builder.forSpreadsheet(spreadsheet).onChange().create();
++      }
++    }
++  } finally {
++    lock.releaseLock();
++  }
++}
++
++function removeDeliveryTriggers() {
++  const properties = PropertiesService.getScriptProperties();
++  const sourceIds = new Set([
++    properties.getProperty('DELIVERY_SPREADSHEET_ID'),
++    properties.getProperty('DELIVERY_FORM_ID')
++  ]);
++  const handlers = new Set([
++    'handleDeliveryFormSubmit', 'handleDeliveryManifestEdit', 'handleDeliveryManifestChange'
++  ]);
++  for (const trigger of ScriptApp.getProjectTriggers()) {
++    if (handlers.has(trigger.getHandlerFunction()) &&
++        sourceIds.has(trigger.getTriggerSourceId())) {
++      ScriptApp.deleteTrigger(trigger);
++    }
++  }
++}
++
++function handleDeliveryFormSubmit(event) {
++  recordDeliveryFormResponse_(event);
++}
++
++function handleDeliveryManifestEdit(event) {
++  if (!event || !event.range) {
++    return;
++  }
++
++  const sheetName = event.range.getSheet().getName();
++  if (sheetName === 'daftar-barang') {
++    refreshConfiguredDeliveryForm_(event);
++    return;
++  }
++  if (sheetName === 'barang-masuk') {
++    syncDashboardAfterSheetEdit_(event);
++  }
++}
++function handleDeliveryManifestChange(event) {
++  const changeTypes = ['INSERT_ROW', 'REMOVE_ROW', 'INSERT_COLUMN', 'REMOVE_COLUMN', 'OTHER'];
++  if (event && changeTypes.includes(event.changeType)) {
++    refreshConfiguredDeliveryForm_(event);
++  }
++}
++
++function refreshConfiguredDeliveryForm_(event) {
++  const properties = PropertiesService.getScriptProperties();
++  if (event.source &&
++      event.source.getId() === properties.getProperty('DELIVERY_SPREADSHEET_ID') &&
++      properties.getProperty('DELIVERY_FORM_ID')) {
++    createDeliveryForm(event);
++  }
++}
+diff --git a/docs/README.md b/docs/README.md
+--- a/docs/README.md
++++ b/docs/README.md
+@@ -1,73 +1,97 @@
+-# Inventory setup and operation
+-
+-## Manifest
+-
+-Manage inventory items in `daftar-barang`, using these row-1 headers:
+-
+-| Header | Example | Meaning |
+-| --- | --- | --- |
+-| ID Barang | TRS-0001 | Permanent, unique inventory ID |
+-| Nama Barang | Kopi Bubuk | Item name |
+-| Unit | kg | Unit used for stock counts |
+-| Level Stok Minim | 2 | Minimum stock; read but not yet used for alerts |
+-| Aktif | TRUE | Include this item in the form |
+-
+-Headers are matched by name, ignoring surrounding spaces and letter case.
+-Column order may change. IDs must match `TRS-0000` and must never be reused
+-for a different item. Changing an ID creates a different inventory identity.
+-Names and units may change without changing the ID. An empty Aktif cell
+-currently means active; use FALSE or an unchecked checkbox to deactivate an item.
+-
+-## Clean-start setup
+-
+-1. Deploy the code to Apps Script through the repository's main-branch workflow
+-   or your configured clasp installation.
+-2. Open the spreadsheet's Apps Script editor and run `resetInventoryData()` once.
+-3. Run `installInventoryTriggers()` using the account that will run the automation.
+-4. Inspect `stok-barang`, `dashboard-data`, the existing form, and Apps Script
+-   Executions to confirm the setup succeeded.
+-
+-The reset validates the manifest, then deletes old inventory records from row 2
+-onward, inventory columns C onward, dashboard rows under the existing four
+-headers, all questions/responses in the configured inventory form, and that
+-form's saved question mappings. It rebuilds the inventory and form using
+-manifest IDs. It preserves `daftar-barang`, A/B headings, the existing form URL,
+-unrelated script properties, and other worksheet tabs. Copies in an external
+-form-response destination are not cleared. Never install a trigger for the reset.
+-
+-This is a clean-start release, not a migration. Numeric legacy mappings or
+-dashboard IDs are rejected. Do not run the reset again after collecting real
+-stock data unless you intend to erase that data.
+-
+-## Routine control flow
+-
+-1. A manifest edit or spreadsheet row/column insertion/deletion calls
+-   `createFormFromSheet()`. A manual run of that function also performs a sync.
+-2. Under the script lock, validate the manifest and locate columns by their
+-   `INVENTORY_ITEM_ID` metadata value, which contains ID Barang. Create columns
+-   for new active IDs and write headers as `Nama Barang/Unit`.
+-3. Rebuild dashboard rows for retained stock columns. Use ID Barang in the
+-   existing `ID Produk` field; keep the other headers `Tanggal`, `Produk`, and
+-   `Jumlah`. Inactive item history remains available for corrections.
+-4. Update the existing form. Keep question IDs for renamed active items and
+-   remove questions for inactive or removed items. All stock questions remain
+-   optional and accept whole numbers of zero or greater.
+-5. On submission, resolve question ID to ID Barang to the current stock column.
+-   Write nonblank answers to today's date in column B, creating a row if needed.
+-   Blank answers leave cells unchanged. An entirely blank response creates no row.
+-6. Direct changes to stock quantities or dates refresh the dashboard. A header
+-   edit triggers a manifest sync, restoring generated headers for manifest items.
+-
+-Do not add or delete stock columns manually: use the manifest. Unrecognised
+-headers are rejected instead of being adopted as items. No Sheets protections
+-are installed. Inactive or removed items retain their stock columns and labels;
+-they disappear from the form, not from historical stock data. Re-enabling an ID
+-reuses its retained column. Physical deletion of columns is not a supported
+-method of retiring items or a recoverable undo operation.
+-
+-Google Forms still assigns its own question IDs. Those IDs are internal
+-references; inventory identity comes exclusively from ID Barang.
+-
+-Local mocks cannot verify deployed triggers or real Sheets/Form permissions.
+-After deployment, test a rename, deactivation, form submission with a zero and
+-a blank answer, and a direct stock correction using disposable data.
++# Inventory setup and operation
++
++## Manifest
++
++Manage inventory items in `daftar-barang`, using these row-1 headers:
++
++| Header | Example | Meaning |
++| --- | --- | --- |
++| ID Barang | TRS-0001 | Permanent, unique inventory ID |
++| Nama Barang | Kopi Bubuk | Item name |
++| Unit | kg | Unit used for stock counts |
++| Level Stok Minim | 2 | Minimum stock; read but not yet used for alerts |
++| Aktif | TRUE | Include this item in the form |
++
++Headers are matched by name, ignoring surrounding spaces and letter case.
++Column order may change. IDs must match `TRS-0000` and must never be reused
++for a different item. Changing an ID creates a different inventory identity.
++Names and units may change without changing the ID. An empty Aktif cell
++currently means active; use FALSE or an unchecked checkbox to deactivate an item.
++
++## Clean-start setup
++
++1. Deploy the code to Apps Script through the repository's main-branch workflow
++   or your configured clasp installation.
++2. Open the spreadsheet's Apps Script editor and run `resetInventoryData()` once.
++3. Run `installInventoryTriggers()` using the account that will run the automation.
++4. Inspect `stok-barang`, `dashboard-data`, the existing form, and Apps Script
++   Executions to confirm the setup succeeded.
++
++The reset validates the manifest, then deletes old inventory records from row 2
++onward, inventory columns C onward, dashboard rows under the existing five
++headers, all questions/responses in the configured inventory form, and that
++form's saved question mappings. It rebuilds the inventory and form using
++manifest IDs. It preserves `daftar-barang`, A/B headings, the existing form URL,
++unrelated script properties, and other worksheet tabs. Copies in an external
++form-response destination are not cleared. Never install a trigger for the reset.
++
++This is a clean-start release, not a migration. Numeric legacy mappings or
++dashboard IDs are rejected. Do not run the reset again after collecting real
++stock data unless you intend to erase that data.
++
++## Routine control flow
++
++1. A manifest edit or spreadsheet row/column insertion/deletion calls
++   `createFormFromSheet()`. A manual run of that function also performs a sync.
++2. Under the script lock, validate the manifest and locate columns by their
++   `INVENTORY_ITEM_ID` metadata value, which contains ID Barang. Create columns
++   for new active IDs and write headers as `Nama Barang/Unit`.
++3. Rebuild dashboard rows for retained stock columns. Use ID Barang in the
++   existing `ID Produk` field; keep the other headers `Tanggal`, `Produk`, and
++   `Jumlah`, and numeric `Penggunaan` where calculable. Inactive item history remains available for corrections.
++4. Update the existing form. Keep question IDs for renamed active items and
++   remove questions for inactive or removed items. All stock questions remain
++   optional and accept whole numbers of zero or greater.
++5. On submission, resolve question ID to ID Barang to the current stock column.
++   Write nonblank answers to today's date in column B, creating a row if needed.
++   Blank answers leave cells unchanged. An entirely blank response creates no row.
++6. Direct changes to stock quantities or dates refresh the dashboard. A header
++   edit triggers a manifest sync, restoring generated headers for manifest items.
++
++Do not add or delete stock columns manually: use the manifest. Unrecognised
++headers are rejected instead of being adopted as items. No Sheets protections
++are installed. Inactive or removed items retain their stock columns and labels;
++they disappear from the form, not from historical stock data. Re-enabling an ID
++reuses its retained column. Physical deletion of columns is not a supported
++method of retiring items or a recoverable undo operation.
++
++Google Forms still assigns its own question IDs. Those IDs are internal
++references; inventory identity comes exclusively from ID Barang.
++
++Local mocks cannot verify deployed triggers or real Sheets/Form permissions.
++After deployment, test a rename, deactivation, form submission with a zero and
++a blank answer, and a direct stock correction using disposable data.
++
++
++## Daily usage in the dashboard
++
++The `dashboard-data` tab includes `Penggunaan` as its fifth column. For each
++item and each recorded stock date, usage is calculated from its most recent
++stock count on an earlier date:
++
++```text
++opening stock + deliveries after that stock date through the current stock date
++  - current stock
++```
++
++Deliveries are summed by `ID Barang` and calendar date. If the prior count was
++several days earlier, the result covers the full gap and is recorded on the
++current stock date; it is not divided across days. The first recorded stock
++count has blank usage because there is no earlier baseline. A zero result is
++stored as numeric 0. A negative result is left blank for human investigation.
++
++A delivery form submission refreshes the dashboard after saving its rows.
++Manual edits to `barang-masuk` and `stok-barang` also refresh it. Therefore,
++editing or backdating either source record recalculates affected historical
++usage. An absent delivery row is treated as zero deliveries. A stock item/date
++without a recorded closing count has no usage row to calculate.

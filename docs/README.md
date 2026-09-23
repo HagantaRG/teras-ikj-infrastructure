@@ -28,7 +28,7 @@ currently means active; use FALSE or an unchecked checkbox to deactivate an item
    Executions to confirm the setup succeeded.
 
 The reset validates the manifest, then deletes old inventory records from row 2
-onward, inventory columns C onward, dashboard rows under the existing four
+onward, inventory columns C onward, dashboard rows under the existing five
 headers, all questions/responses in the configured inventory form, and that
 form's saved question mappings. It rebuilds the inventory and form using
 manifest IDs. It preserves `daftar-barang`, A/B headings, the existing form URL,
@@ -48,7 +48,7 @@ stock data unless you intend to erase that data.
    for new active IDs and write headers as `Nama Barang/Unit`.
 3. Rebuild dashboard rows for retained stock columns. Use ID Barang in the
    existing `ID Produk` field; keep the other headers `Tanggal`, `Produk`, and
-   `Jumlah`. Inactive item history remains available for corrections.
+   `Jumlah`, and numeric `Penggunaan` where calculable. Inactive item history remains available for corrections.
 4. Update the existing form. Keep question IDs for renamed active items and
    remove questions for inactive or removed items. All stock questions remain
    optional and accept whole numbers of zero or greater.
@@ -71,3 +71,27 @@ references; inventory identity comes exclusively from ID Barang.
 Local mocks cannot verify deployed triggers or real Sheets/Form permissions.
 After deployment, test a rename, deactivation, form submission with a zero and
 a blank answer, and a direct stock correction using disposable data.
+
+
+## Daily usage in the dashboard
+
+The `dashboard-data` tab includes `Penggunaan` as its fifth column. For each
+item and each recorded stock date, usage is calculated from its most recent
+stock count on an earlier date:
+
+```text
+opening stock + deliveries after that stock date through the current stock date
+  - current stock
+```
+
+Deliveries are summed by `ID Barang` and calendar date. If the prior count was
+several days earlier, the result covers the full gap and is recorded on the
+current stock date; it is not divided across days. The first recorded stock
+count has blank usage because there is no earlier baseline. A zero result is
+stored as numeric 0. A negative result is left blank for human investigation.
+
+A delivery form submission refreshes the dashboard after saving its rows.
+Manual edits to `barang-masuk` and `stok-barang` also refresh it. Therefore,
+editing or backdating either source record recalculates affected historical
+usage. An absent delivery row is treated as zero deliveries. A stock item/date
+without a recorded closing count has no usage row to calculate.

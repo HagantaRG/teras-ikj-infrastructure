@@ -73,11 +73,19 @@ function handleDeliveryFormSubmit(event) {
 }
 
 function handleDeliveryManifestEdit(event) {
-  if (event && event.range && event.range.getSheet().getName() === 'daftar-barang') {
+  if (!event || !event.range) {
+    return;
+  }
+
+  const sheetName = event.range.getSheet().getName();
+  if (sheetName === 'daftar-barang') {
     refreshConfiguredDeliveryForm_(event);
+    return;
+  }
+  if (sheetName === 'barang-masuk') {
+    syncDashboardAfterSheetEdit_(event);
   }
 }
-
 function handleDeliveryManifestChange(event) {
   const changeTypes = ['INSERT_ROW', 'REMOVE_ROW', 'INSERT_COLUMN', 'REMOVE_COLUMN', 'OTHER'];
   if (event && changeTypes.includes(event.changeType)) {
