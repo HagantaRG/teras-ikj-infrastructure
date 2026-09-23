@@ -8,8 +8,8 @@ function getInventoryFormMappingPrefix_(sheet, formId) {
 }
 
 // Call while holding the script lock.
-function syncInventoryForm_(form, sheet, columns, properties, validation) {
-  const prefix = getInventoryFormMappingPrefix_(sheet, form.getId());
+function syncInventoryForm_(form, sheet, columns, properties, validation, mappingPrefix) {
+  const prefix = mappingPrefix || getInventoryFormMappingPrefix_(sheet, form.getId());
   const initializedKey = prefix + 'INITIALIZED';
   const savedProperties = properties.getProperties();
   const mappings = new Map();

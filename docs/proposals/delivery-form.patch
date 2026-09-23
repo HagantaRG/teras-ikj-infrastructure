@@ -1,0 +1,345 @@
+diff --git a/src/forms/InventoryForm.js b/src/forms/InventoryForm.js
+--- a/src/forms/InventoryForm.js
++++ b/src/forms/InventoryForm.js
+@@ -8,8 +8,8 @@
+ }
+ 
+ // Call while holding the script lock.
+-function syncInventoryForm_(form, sheet, columns, properties, validation) {
+-  const prefix = getInventoryFormMappingPrefix_(sheet, form.getId());
++function syncInventoryForm_(form, sheet, columns, properties, validation, mappingPrefix) {
++  const prefix = mappingPrefix || getInventoryFormMappingPrefix_(sheet, form.getId());
+   const initializedKey = prefix + 'INITIALIZED';
+   const savedProperties = properties.getProperties();
+   const mappings = new Map();
+diff --git a/src/forms/DeliveryForm.js b/src/forms/DeliveryForm.js
+new file mode 100644
+--- /dev/null
++++ b/src/forms/DeliveryForm.js
+@@ -0,0 +1,88 @@
++function createDeliveryForm(event) {
++  const lock = LockService.getScriptLock();
++  lock.waitLock(30000);
++  try {
++    const spreadsheet = event && event.source
++      ? event.source
++      : SpreadsheetApp.getActiveSpreadsheet();
++    if (!spreadsheet) {
++      throw new Error('Run delivery setup from the inventory spreadsheet.');
++    }
++    const properties = PropertiesService.getScriptProperties();
++    const savedSpreadsheetId = properties.getProperty('DELIVERY_SPREADSHEET_ID');
++    if (savedSpreadsheetId && savedSpreadsheetId !== spreadsheet.getId()) {
++      throw new Error('The delivery form is already configured for another spreadsheet.');
++    }
++    const items = getDeliveryManifestItems_(spreadsheet);
++    const sheet = getOrCreateDeliverySheet_(spreadsheet);
++    const formId = properties.getProperty('DELIVERY_FORM_ID');
++    const form = formId
++      ? FormApp.openById(formId)
++      : FormApp.create('Formulir Barang Masuk');
++
++    // Persist IDs immediately so subsequent runs reuse the same form URL.
++    properties.setProperty('DELIVERY_FORM_ID', form.getId());
++    properties.setProperty('DELIVERY_SPREADSHEET_ID', spreadsheet.getId());
++    form.setTitle('Formulir Barang Masuk');
++    form.setDescription(
++      'Isi jumlah barang yang diterima. Kosongkan barang yang tidak diterima. ' +
++      'Tanggal dicatat otomatis sesuai tanggal pengiriman formulir. ' +
++      'Kirim satu kali untuk setiap penerimaan barang.'
++    );
++    form.setConfirmationMessage('Terima kasih. Laporan barang masuk telah dikirim.');
++
++    const validation = FormApp.createTextValidation()
++      .requireTextMatchesPattern('^0*[1-9][0-9]*$')
++      .setHelpText(
++        'Isi dengan bilangan bulat lebih dari 0, misalnya 1, 2, atau 3. ' +
++        'Jangan gunakan koma, titik, atau tanda minus. ' +
++        'Kosongkan jika barang tidak diterima.'
++      )
++      .build();
++    const fields = items.map(item => ({
++      itemId: item.id,
++      title: item.displayName,
++      active: item.active
++    }));
++    syncInventoryForm_(
++      form, sheet, fields, properties, validation,
++      getDeliveryFormMappingPrefix_(sheet, form.getId())
++    );
++    syncDeliveryNotes_(form, properties);
++    Logger.log('Delivery form URL: ' + form.getPublishedUrl());
++    Logger.log('Delivery form edit URL: ' + form.getEditUrl());
++  } finally {
++    lock.releaseLock();
++  }
++}
++
++function getDeliveryManifestItems_(spreadsheet) {
++  const sheet = spreadsheet.getSheetByName('daftar-barang');
++  if (!sheet) {
++    throw new Error('The daftar-barang sheet was not found.');
++  }
++  return readManifestItems_(sheet);
++}
++
++function getDeliveryFormMappingPrefix_(sheet, formId) {
++  return [
++    'DELIVERY_ITEM', sheet.getParent().getId(), sheet.getSheetId(), formId
++  ].join(':') + ':';
++}
++
++function syncDeliveryNotes_(form, properties) {
++  const savedId = properties.getProperty('DELIVERY_NOTES_ITEM_ID');
++  const existing = form.getItems().find(item => String(item.getId()) === savedId);
++  if (existing && existing.getType() !== FormApp.ItemType.PARAGRAPH_TEXT) {
++    throw new Error('The delivery notes question is no longer a paragraph field.');
++  }
++  const notes = existing ? existing.asParagraphTextItem() : form.addParagraphTextItem();
++  properties.setProperty('DELIVERY_NOTES_ITEM_ID', String(notes.getId()));
++  notes.setTitle('Catatan')
++    .setHelpText('Opsional. Catatan ini berlaku untuk semua barang dalam laporan ini.')
++    .setRequired(false);
++  const lastIndex = form.getItems().length - 1;
++  if (notes.getIndex() !== lastIndex) {
++    form.moveItem(notes, lastIndex);
++  }
++}
+diff --git a/src/sheets/DeliveryData.js b/src/sheets/DeliveryData.js
+new file mode 100644
+--- /dev/null
++++ b/src/sheets/DeliveryData.js
+@@ -0,0 +1,42 @@
++function getOrCreateDeliverySheet_(spreadsheet) {
++  const name = 'barang-masuk';
++  const headers = ['Tanggal', 'ID Barang', 'Jumlah Masuk', 'Catatan'];
++  let sheet = spreadsheet.getSheetByName(name);
++  if (!sheet) {
++    sheet = spreadsheet.insertSheet(name);
++  }
++  if (sheet.getLastRow() === 0) {
++    if (sheet.getMaxColumns() < headers.length) {
++      sheet.insertColumnsAfter(
++        sheet.getMaxColumns(), headers.length - sheet.getMaxColumns()
++      );
++    }
++    sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
++    sheet.setFrozenRows(1);
++  } else {
++    const actual = sheet.getRange(1, 1, 1, headers.length).getDisplayValues()[0];
++    if (actual.some((value, index) => value !== headers[index])) {
++      throw new Error(
++        'barang-masuk must have these headers in order: ' + headers.join(', ') + '.'
++      );
++    }
++  }
++  return sheet;
++}
++
++// Call while holding the script lock.
++function appendDeliveryRows_(sheet, rows) {
++  if (rows.length === 0) {
++    return;
++  }
++  const firstRow = sheet.getLastRow() + 1;
++  const lastRow = firstRow + rows.length - 1;
++  if (lastRow > sheet.getMaxRows()) {
++    sheet.insertRowsAfter(sheet.getMaxRows(), lastRow - sheet.getMaxRows());
++  }
++  sheet.getRange(firstRow, 1, rows.length, 1).setNumberFormat('yyyy-mm-dd');
++  sheet.getRange(firstRow, 2, rows.length, 1).setNumberFormat('@');
++  sheet.getRange(firstRow, 3, rows.length, 1).setNumberFormat('0');
++  sheet.getRange(firstRow, 4, rows.length, 1).setNumberFormat('@');
++  sheet.getRange(firstRow, 1, rows.length, 4).setValues(rows);
++}
+diff --git a/src/automations/DeliveryResponses.js b/src/automations/DeliveryResponses.js
+new file mode 100644
+--- /dev/null
++++ b/src/automations/DeliveryResponses.js
+@@ -0,0 +1,86 @@
++function recordDeliveryFormResponse_(event) {
++  if (!event || !event.source || !event.response) {
++    throw new Error('A Google Forms submission event is required.');
++  }
++  const lock = LockService.getScriptLock();
++  lock.waitLock(30000);
++  try {
++    const properties = PropertiesService.getScriptProperties();
++    const spreadsheetId = properties.getProperty('DELIVERY_SPREADSHEET_ID');
++    const formId = properties.getProperty('DELIVERY_FORM_ID');
++    if (!spreadsheetId || formId !== event.source.getId()) {
++      throw new Error('This submission does not match the configured delivery form.');
++    }
++    const spreadsheet = SpreadsheetApp.openById(spreadsheetId);
++    const manifestItems = getDeliveryManifestItems_(spreadsheet);
++    const sheet = getOrCreateDeliverySheet_(spreadsheet);
++    const prefix = getDeliveryFormMappingPrefix_(sheet, formId);
++    const saved = properties.getProperties();
++    const itemIdsByQuestion = new Map();
++    for (const [key, questionId] of Object.entries(saved)) {
++      if (!key.startsWith(prefix) || key === prefix + 'INITIALIZED') {
++        continue;
++      }
++      const itemId = key.slice(prefix.length);
++      if (!MANIFEST_ITEM_ID_PATTERN.test(itemId) || itemIdsByQuestion.has(questionId)) {
++        throw new Error('Invalid or duplicate delivery question mapping: ' + key);
++      }
++      itemIdsByQuestion.set(String(questionId), itemId);
++    }
++
++    const timestamp = event.response.getTimestamp();
++    if (!(timestamp instanceof Date) || Number.isNaN(timestamp.getTime())) {
++      throw new Error('The delivery submission has no valid timestamp.');
++    }
++    const day = Utilities.formatDate(
++      timestamp, Session.getScriptTimeZone(), 'yyyy-MM-dd'
++    );
++    // Store the chosen calendar day in the destination sheet's timezone.
++    const date = Utilities.parseDate(
++      day, spreadsheet.getSpreadsheetTimeZone(), 'yyyy-MM-dd'
++    );
++    const rows = buildDeliveryRows_(
++      event.response.getItemResponses(), itemIdsByQuestion,
++      properties.getProperty('DELIVERY_NOTES_ITEM_ID'), manifestItems, date
++    );
++    appendDeliveryRows_(sheet, rows);
++  } finally {
++    lock.releaseLock();
++  }
++}
++
++function buildDeliveryRows_(responses, itemIdsByQuestion, notesQuestionId, items, date) {
++  const activeIds = new Set(items.filter(item => item.active).map(item => item.id));
++  const quantities = new Map();
++  let notes = '';
++
++  // Validate the entire submission before appending any rows.
++  for (const response of responses) {
++    const questionId = String(response.getItem().getId());
++    const answer = String(response.getResponse()).trim();
++    if (questionId === notesQuestionId) {
++      notes = answer;
++      continue;
++    }
++    if (answer === '') {
++      continue;
++    }
++    const itemId = itemIdsByQuestion.get(questionId);
++    if (!itemId || !activeIds.has(itemId)) {
++      throw new Error('A delivered item is no longer active or mapped: ' + questionId);
++    }
++    if (!/^0*[1-9][0-9]*$/.test(answer) || !Number.isSafeInteger(Number(answer))) {
++      throw new Error('Delivery quantity must be a positive whole number for ' + itemId);
++    }
++    if (quantities.has(itemId)) {
++      throw new Error('Multiple answers were supplied for delivery item ' + itemId);
++    }
++    quantities.set(itemId, Number(answer));
++  }
++
++  // User notes must remain text, including notes beginning with an equals sign.
++  const cellNotes = notes.startsWith('=') ? "'" + notes : notes;
++  return Array.from(quantities, ([itemId, quantity]) => [
++    date, itemId, quantity, cellNotes
++  ]);
++}
+diff --git a/src/triggers/DeliveryTriggers.js b/src/triggers/DeliveryTriggers.js
+new file mode 100644
+--- /dev/null
++++ b/src/triggers/DeliveryTriggers.js
+@@ -0,0 +1,95 @@
++function installDeliveryTriggers() {
++  const lock = LockService.getScriptLock();
++  lock.waitLock(30000);
++  try {
++    const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
++    const properties = PropertiesService.getScriptProperties();
++    const formId = properties.getProperty('DELIVERY_FORM_ID');
++    if (!spreadsheet || !formId ||
++        properties.getProperty('DELIVERY_SPREADSHEET_ID') !== spreadsheet.getId()) {
++      throw new Error('Run createDeliveryForm from this spreadsheet first.');
++    }
++    const form = FormApp.openById(formId);
++    const definitions = [
++      {
++        handler: 'handleDeliveryFormSubmit',
++        sourceId: formId,
++        eventType: ScriptApp.EventType.ON_FORM_SUBMIT
++      },
++      {
++        handler: 'handleDeliveryManifestEdit',
++        sourceId: spreadsheet.getId(),
++        eventType: ScriptApp.EventType.ON_EDIT
++      },
++      {
++        handler: 'handleDeliveryManifestChange',
++        sourceId: spreadsheet.getId(),
++        eventType: ScriptApp.EventType.ON_CHANGE
++      }
++    ];
++    const existing = ScriptApp.getProjectTriggers();
++    for (const definition of definitions) {
++      const found = existing.some(trigger =>
++        trigger.getHandlerFunction() === definition.handler &&
++        trigger.getTriggerSourceId() === definition.sourceId &&
++        trigger.getEventType() === definition.eventType
++      );
++      if (found) {
++        continue;
++      }
++      const builder = ScriptApp.newTrigger(definition.handler);
++      if (definition.eventType === ScriptApp.EventType.ON_FORM_SUBMIT) {
++        builder.forForm(form).onFormSubmit().create();
++      } else if (definition.eventType === ScriptApp.EventType.ON_EDIT) {
++        builder.forSpreadsheet(spreadsheet).onEdit().create();
++      } else {
++        builder.forSpreadsheet(spreadsheet).onChange().create();
++      }
++    }
++  } finally {
++    lock.releaseLock();
++  }
++}
++
++function removeDeliveryTriggers() {
++  const properties = PropertiesService.getScriptProperties();
++  const sourceIds = new Set([
++    properties.getProperty('DELIVERY_SPREADSHEET_ID'),
++    properties.getProperty('DELIVERY_FORM_ID')
++  ]);
++  const handlers = new Set([
++    'handleDeliveryFormSubmit', 'handleDeliveryManifestEdit', 'handleDeliveryManifestChange'
++  ]);
++  for (const trigger of ScriptApp.getProjectTriggers()) {
++    if (handlers.has(trigger.getHandlerFunction()) &&
++        sourceIds.has(trigger.getTriggerSourceId())) {
++      ScriptApp.deleteTrigger(trigger);
++    }
++  }
++}
++
++function handleDeliveryFormSubmit(event) {
++  recordDeliveryFormResponse_(event);
++}
++
++function handleDeliveryManifestEdit(event) {
++  if (event && event.range && event.range.getSheet().getName() === 'daftar-barang') {
++    refreshConfiguredDeliveryForm_(event);
++  }
++}
++
++function handleDeliveryManifestChange(event) {
++  const changeTypes = ['INSERT_ROW', 'REMOVE_ROW', 'INSERT_COLUMN', 'REMOVE_COLUMN', 'OTHER'];
++  if (event && changeTypes.includes(event.changeType)) {
++    refreshConfiguredDeliveryForm_(event);
++  }
++}
++
++function refreshConfiguredDeliveryForm_(event) {
++  const properties = PropertiesService.getScriptProperties();
++  if (event.source &&
++      event.source.getId() === properties.getProperty('DELIVERY_SPREADSHEET_ID') &&
++      properties.getProperty('DELIVERY_FORM_ID')) {
++    createDeliveryForm(event);
++  }
++}
