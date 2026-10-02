@@ -263,7 +263,7 @@ assert.equal(resetProperties.UNRELATED_SETTING, 'keep');
 assert.equal(Object.keys(resetProperties).length, 2);
 assert.ok(resetEvents.some(event => event.join(',') === 'clear stock,2,1,9,6'));
 assert.ok(resetEvents.some(event => event.join(',') === 'delete columns,3,4'));
-assert.ok(resetEvents.some(event => event.join(',') === 'clear dashboard,2,1,2,4'));
+assert.ok(resetEvents.some(event => event.join(',') === 'clear dashboard,2,1,2,5'));
 assert.deepEqual(resetEvents.slice(-2), [['rebuild'], ['unlock']]);
 resetEvents.length = 0;
 reset.readManifestItems_ = () => {throw new Error('Invalid manifest');};

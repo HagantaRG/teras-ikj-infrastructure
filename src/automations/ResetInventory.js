@@ -50,7 +50,7 @@ function resetInventoryData() {
       inventorySheet.deleteColumns(3, inventorySheet.getMaxColumns() - 2);
     }
     if (dashboardSheet.getLastRow() > 1) {
-      dashboardSheet.getRange(2, 1, dashboardSheet.getLastRow() - 1, 4)
+      dashboardSheet.getRange(2, 1, dashboardSheet.getLastRow() - 1, 5)
         .clearContent();
     }
 
