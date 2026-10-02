@@ -4,15 +4,8 @@ function createDeliveryForm(event) {
   try {
     const spreadsheet = event && event.source
       ? event.source
-      : SpreadsheetApp.getActiveSpreadsheet();
-    if (!spreadsheet) {
-      throw new Error('Run delivery setup from the inventory spreadsheet.');
-    }
+      : getConfiguredSpreadsheet_('DELIVERY_SPREADSHEET_ID');
     const properties = PropertiesService.getScriptProperties();
-    const savedSpreadsheetId = properties.getProperty('DELIVERY_SPREADSHEET_ID');
-    if (savedSpreadsheetId && savedSpreadsheetId !== spreadsheet.getId()) {
-      throw new Error('The delivery form is already configured for another spreadsheet.');
-    }
     const items = getDeliveryManifestItems_(spreadsheet);
     const sheet = getOrCreateDeliverySheet_(spreadsheet);
     const formId = properties.getProperty('DELIVERY_FORM_ID');
@@ -20,9 +13,8 @@ function createDeliveryForm(event) {
       ? FormApp.openById(formId)
       : FormApp.create('Formulir Barang Masuk');
 
-    // Persist IDs immediately so subsequent runs reuse the same form URL.
+    // Persist the ID immediately so subsequent runs reuse the same form URL.
     properties.setProperty('DELIVERY_FORM_ID', form.getId());
-    properties.setProperty('DELIVERY_SPREADSHEET_ID', spreadsheet.getId());
     form.setTitle('Formulir Barang Masuk');
     form.setDescription(
       'Isi jumlah barang yang diterima. Kosongkan barang yang tidak diterima. ' +

@@ -5,7 +5,7 @@ function createFormFromSheet(event) {
   try {
     const spreadsheet = event && event.source
       ? event.source
-      : SpreadsheetApp.getActiveSpreadsheet();
+      : getConfiguredSpreadsheet_('INVENTORY_SPREADSHEET_ID');
     const sheet = spreadsheet.getSheetByName('stok-barang');
 
     if (!sheet) {
@@ -24,9 +24,8 @@ function refreshInventorySystem_(spreadsheet, sheet) {
   const inventoryColumns = getInventoryColumns_(sheet);
   syncDashboardData_(spreadsheet, sheet, inventoryColumns);
 
-  // Save the form ID once, then reuse that form on subsequent runs.
+  // Reuse the saved form ID on subsequent runs.
   const properties = PropertiesService.getScriptProperties();
-  properties.setProperty('INVENTORY_SPREADSHEET_ID', spreadsheet.getId());
   const savedFormId = properties.getProperty('INVENTORY_FORM_ID');
   if (!savedFormId && !inventoryColumns.some(column => column.active)) {
     return;

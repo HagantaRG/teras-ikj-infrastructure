@@ -40,5 +40,7 @@ running `clasp push` to update the connected Apps Script project.
 
 The existing automation and manifest were moved without changing their contents.
 No build step is required. Run `node tests/manifest-identity.cjs` for local mock
-checks. See [inventory setup and operation](docs/README.md) for the manifest
-schema, clean-start reset, and trigger setup.
+checks. The project is standalone: spreadsheet IDs are read from Script
+Properties (`INVENTORY_SPREADSHEET_ID`, `DELIVERY_SPREADSHEET_ID`). See
+[inventory setup and operation](docs/README.md) for the manifest schema,
+clean-start reset, and trigger setup.

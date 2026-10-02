@@ -1,7 +1,7 @@
 function installInventoryTriggers() {
-  const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
-  if (!spreadsheet || !spreadsheet.getSheetByName('stok-barang')) {
-    throw new Error('Run setup from the spreadsheet containing stok-barang.');
+  const spreadsheet = getConfiguredSpreadsheet_('INVENTORY_SPREADSHEET_ID');
+  if (!spreadsheet.getSheetByName('stok-barang')) {
+    throw new Error('The configured spreadsheet must contain stok-barang.');
   }
 
   const lock = LockService.getScriptLock();
@@ -12,14 +12,12 @@ function installInventoryTriggers() {
     const triggers = ScriptApp.getProjectTriggers();
     const properties = PropertiesService.getScriptProperties();
     const formId = properties.getProperty('INVENTORY_FORM_ID');
-
     if (!formId) {
       throw new Error(
         'Run createFormFromSheet before installing inventory triggers.'
       );
     }
 
-    properties.setProperty('INVENTORY_SPREADSHEET_ID', spreadsheetId);
     const form = FormApp.openById(formId);
     const definitions = [
       {
@@ -71,19 +69,17 @@ function installInventoryTriggers() {
 }
 
 function removeInventoryTriggers() {
-  const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
-  if (!spreadsheet) {
-    throw new Error('Run removal from the inventory spreadsheet.');
-  }
-
   const handlers = [
     'handleInventoryColumnChange',
     'handleInventoryHeaderEdit',
     'handleInventoryFormSubmit'
   ];
-  const formId = PropertiesService.getScriptProperties()
-    .getProperty('INVENTORY_FORM_ID');
-  const sourceIds = new Set([spreadsheet.getId(), formId]);
+  const properties = PropertiesService.getScriptProperties();
+  const formId = properties.getProperty('INVENTORY_FORM_ID');
+  const sourceIds = new Set([
+    properties.getProperty('INVENTORY_SPREADSHEET_ID'),
+    formId
+  ]);
 
   for (const trigger of ScriptApp.getProjectTriggers()) {
     if (

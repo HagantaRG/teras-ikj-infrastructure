@@ -4,7 +4,7 @@ function resetInventoryData() {
   lock.waitLock(30000);
 
   try {
-    const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+    const spreadsheet = getConfiguredSpreadsheet_('INVENTORY_SPREADSHEET_ID');
     const inventorySheet = spreadsheet.getSheetByName('stok-barang');
     const manifestSheet = spreadsheet.getSheetByName('daftar-barang');
     if (!inventorySheet || !manifestSheet) {

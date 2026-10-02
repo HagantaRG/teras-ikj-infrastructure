@@ -3,7 +3,7 @@ function createDashboardData() {
   lock.waitLock(30000);
 
   try {
-    const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+    const spreadsheet = getConfiguredSpreadsheet_('INVENTORY_SPREADSHEET_ID');
     const sourceSheet = spreadsheet.getSheetByName('stok-barang');
     if (!sourceSheet) {
       throw new Error('The stok-barang sheet was not found.');

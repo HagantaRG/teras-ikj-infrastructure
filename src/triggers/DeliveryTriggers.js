@@ -2,12 +2,12 @@ function installDeliveryTriggers() {
   const lock = LockService.getScriptLock();
   lock.waitLock(30000);
   try {
-    const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+    const spreadsheet = getConfiguredSpreadsheet_('DELIVERY_SPREADSHEET_ID');
     const properties = PropertiesService.getScriptProperties();
     const formId = properties.getProperty('DELIVERY_FORM_ID');
-    if (!spreadsheet || !formId ||
+    if (!formId ||
         properties.getProperty('DELIVERY_SPREADSHEET_ID') !== spreadsheet.getId()) {
-      throw new Error('Run createDeliveryForm from this spreadsheet first.');
+      throw new Error('Run createDeliveryForm first.');
     }
     const form = FormApp.openById(formId);
     const definitions = [

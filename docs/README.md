@@ -20,11 +20,18 @@ currently means active; use FALSE or an unchecked checkbox to deactivate an item
 
 ## Clean-start setup
 
+The scripts run as a standalone Apps Script project, not a script bound to
+the spreadsheet. The project locates its workbook through Script Properties.
+
 1. Deploy the code to Apps Script through the repository's main-branch workflow
    or your configured clasp installation.
-2. Open the spreadsheet's Apps Script editor and run `resetInventoryData()` once.
-3. Run `installInventoryTriggers()` using the account that will run the automation.
-4. Inspect `stok-barang`, `dashboard-data`, the existing form, and Apps Script
+2. In the Apps Script editor, open Project Settings > Script Properties and set
+   `INVENTORY_SPREADSHEET_ID` and `DELIVERY_SPREADSHEET_ID` to the ID of the
+   inventory workbook (the same workbook may back both workflows).
+3. From the script editor, run `resetInventoryData()` once.
+4. Run `installInventoryTriggers()` using the account that will run the automation.
+5. Run `createDeliveryForm()` once, then `installDeliveryTriggers()`.
+6. Inspect `stok-barang`, `dashboard-data`, the existing form, and Apps Script
    Executions to confirm the setup succeeded.
 
 The reset validates the manifest, then deletes old inventory records from row 2

@@ -93,16 +93,43 @@ columns[0].active = false;
 context.syncInventoryForm_(form, sheet, columns, properties, {});
 assert.equal(questions.length, 0);
 console.log('PASS: ID Barang question mapping, rename, optional fields and deactivation');
+const stockRows = [
+  [new Date('2026-09-17T00:00:00Z'), 5],
+  [new Date('2026-09-18T00:00:00Z'), 2]
+];
 const inventory = {
-  getLastRow: () => 2,
-  getRange: (row, column) => ({
-    getValues: () => column === 2 ? [[new Date('2026-09-18T00:00:00Z')]] : [[0]]
+  getLastRow: () => stockRows.length + 1,
+  getRange: (row, column, count) => ({
+    getValues: () => stockRows
+      .slice(row - 2, row - 2 + count)
+      .map(values => [column === 2 ? values[0] : values[1]])
   })
 };
-const dashboardRows = context.buildCurrentDashboardRows_(inventory, columns);
+const deliveryRows = [
+  ['Tanggal', 'ID Barang', 'Jumlah Masuk', 'Catatan'],
+  [new Date('2026-09-18T00:00:00Z'), 'TRS-0001', 4, '']
+];
+const deliveriesSheet = {
+  getLastRow: () => deliveryRows.length,
+  getRange: (row, column, count, width) => ({
+    getDisplayValues: () => deliveryRows
+      .slice(row - 1, row - 1 + count)
+      .map(values => values.slice(column - 1, column - 1 + width).map(String)),
+    getValues: () => deliveryRows
+      .slice(row - 1, row - 1 + count)
+      .map(values => values.slice(column - 1, column - 1 + width))
+  })
+};
+const dashboardBook = {
+  getSheetByName: name => name === 'barang-masuk' ? deliveriesSheet : null
+};
+const dashboardRows = context.buildCurrentDashboardRows_(inventory, columns, dashboardBook);
 assert.equal(dashboardRows[0][1], 'TRS-0001');
-assert.equal(dashboardRows[0][3], 0);
-console.log('PASS: dashboard IDs and zero stock, including inactive items');
+assert.equal(dashboardRows[0][3], 5);
+assert.equal(dashboardRows[0][4], '');
+assert.equal(dashboardRows[1][3], 2);
+assert.equal(dashboardRows[1][4], 7);
+console.log('PASS: dashboard IDs, zero-inclusive stock and usage from barang-masuk deliveries');
 const events = [];
 context.createFormFromSheet = event => events.push(event);
 for (const type of ['INSERT_ROW', 'REMOVE_ROW', 'INSERT_COLUMN', 'REMOVE_COLUMN']) {
@@ -205,7 +232,6 @@ const reset = isolatedContext({
   LockService: {getScriptLock: () => ({
     waitLock: () => {}, releaseLock: () => resetEvents.push(['unlock'])
   })},
-  SpreadsheetApp: {getActiveSpreadsheet: () => resetBook},
   PropertiesService: {getScriptProperties: () => ({
     getProperty: key => resetProperties[key],
     getProperties: () => ({...resetProperties}),
@@ -221,6 +247,7 @@ const reset = isolatedContext({
   }},
   Logger: {log: () => {}}
 });
+reset.getConfiguredSpreadsheet_ = () => resetBook;
 reset.getOrCreateDashboardSheet_ = () => ({
   getLastRow: () => 3,
   getRange: (...args) => ({clearContent: () => resetEvents.push(['clear dashboard', ...args])})
